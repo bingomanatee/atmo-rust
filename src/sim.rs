@@ -1,11 +1,27 @@
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
 use crate::planet::{Planet, PlanetParams};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Sim {
     pub id: Uuid,
     pub planet_id: Option<Uuid>,
+    pub sim_id: Uuid,
+}
+
+pub struct SimPlanetParams {
+    pub radius: i32,
+    pub mantle_density_gcm3: Option<f64>,
+}
+
+impl SimPlanetParams {
+    pub fn into_planet_params(self, sim_id: Uuid) -> PlanetParams {
+        PlanetParams {
+            sim_id,
+            radius: self.radius,
+            mantle_density_gcm3: self.mantle_density_gcm3,
+        }
+    }
 }
 
 impl Sim {
@@ -13,18 +29,18 @@ impl Sim {
         Sim {
             id: Uuid::new_v4(),
             planet_id: None,
+            sim_id: Uuid::new_v4(),
         }
     }
 
-    pub fn generate_planet(&mut self, radius: i32) -> Planet {
+    pub fn generate_planet(&mut self, params: SimPlanetParams) -> Planet {
         if self.planet_id.is_some() {
             panic!("Sim already has a planet id");
         }
-        let planet = Planet::new(PlanetParams {
-            sim_id: self.id,
-            radius,
-            mantle_density_gcm3: None
-        });
+
+        let new_params = params.into_planet_params(self.id);
+
+        let planet = Planet::new(new_params);
         self.planet_id = Option::from(planet.id);
         planet
     }
@@ -33,8 +49,8 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
     use crate::planet::EARTH_RADIUS_KM;
+    use uuid::Uuid;
 
     #[test]
     fn test_sim_new() {
@@ -46,7 +62,10 @@ mod tests {
     #[test]
     fn test_generate_planet_success() {
         let mut sim = Sim::new();
-        let planet = sim.generate_planet(EARTH_RADIUS_KM);
+        let planet = sim.generate_planet(SimPlanetParams {
+            radius: EARTH_RADIUS_KM,
+            mantle_density_gcm3: None
+        });
 
         // The planet's owner id should be the sim's id
         assert_eq!(planet.sim_id, sim.id);
@@ -60,7 +79,13 @@ mod tests {
     #[should_panic(expected = "Sim already has a planet id")]
     fn test_generate_planet_already_has_planet() {
         let mut sim = Sim::new();
-        sim.generate_planet(EARTH_RADIUS_KM /2);
-        sim.generate_planet(EARTH_RADIUS_KM * 2);
+        sim.generate_planet(SimPlanetParams {
+            radius: EARTH_RADIUS_KM / 2,
+            mantle_density_gcm3: None
+        });
+        sim.generate_planet(SimPlanetParams {
+            radius: EARTH_RADIUS_KM * 2,
+            mantle_density_gcm3: None
+        });
     }
 }

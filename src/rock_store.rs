@@ -5,16 +5,16 @@ use crate::planet::Planet;
 use crate::plate::{Plate, Platelet};
 use crate::sim::Sim;
 
-pub struct Store {
+pub struct RockStore {
     db: DB,
 }
 
-impl Store {
+impl RockStore {
     pub fn open(path: &str) -> Result<Self, rocksdb::Error> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         let db = DB::open(&opts, path)?;
-        Ok(Store { db })
+        Ok(RockStore { db })
     }
 
     // Helper to generate keys with prefixes
