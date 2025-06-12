@@ -56,10 +56,11 @@ impl SimManager {
         }
     }
     pub fn sim(&self) -> Result<Sim, String> {
-        self.store
-            .get_sim(&self.sim_id)
-            .map_err(|e| format!("DB error loading Sim: {}", e))?
-            .ok_or_else(|| format!("No Sim found with id {}", self.sim_id))
+        match self.store.get_sim(&self.sim_id) {
+            Err(e) => Err(format!("DB error loading Sim: {}", e)),
+            Ok(None) => Err(format!("No Sim found with id {}", self.sim_id)),
+            Ok(Some(sim)) => Ok(sim),
+        }
     }
 
     pub fn planet(&self) -> Result<Planet, String> {
@@ -68,22 +69,19 @@ impl SimManager {
             .planet_id
             .ok_or_else(|| "No Planet associated with this Sim".to_string())?;
 
-        self.store
-            .get_planet(&pid)
-            .map_err(|e| format!("DB error loading Planet: {}", e))?
-            .ok_or_else(|| format!("No Planet found with id {}", pid))
+        match self.store.get_planet(&pid) {
+            Err(e) => Err(format!("DB error loading Planet: {}", e)),
+            Ok(None) => Err(format!("No Planet found with id {}", pid)),
+            Ok(Some(planet)) => Ok(planet),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::planet::{Planet, PlanetParams};
-    use crate::rock_store::RockStore;
     use crate::sim::{Sim, SimPlanetParams};
     use crate::sim_manager::{SimManager, SimManagerParams};
-    use serde::de::Unexpected::Option;
     use tempfile::tempdir;
-    use uuid::Uuid;
 
     fn make_test_planet_config() -> SimPlanetParams {
         SimPlanetParams {
@@ -156,7 +154,10 @@ mod tests {
         let dir2 = tempdir().unwrap();
         let db2 = dir.path().join("db").to_string_lossy().to_string();
 
-        let mgr1 = SimManager::new(SimManagerParams::Load { db_path: db2, sim_id: existing_id });
+        let mgr1 = SimManager::new(SimManagerParams::Load {
+            db_path: db2,
+            sim_id: existing_id,
+        });
         assert_eq!(mgr1.sim_id, existing_id);
         assert_eq!(mgr1.planet().unwrap().id, existing_pid);
     }
