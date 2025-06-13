@@ -6,21 +6,26 @@ A Rust-based atmospheric simulation with a React Three Fiber web visualizer for 
 
 ```
 atmo-rust/
-├── src/                    # Rust simulation code
-│   ├── sim_manager.rs     # Main simulation manager with JSON export
-│   ├── planet.rs          # Planet data structures
-│   ├── plate.rs           # Tectonic plate structures
+├── src/                           # Rust simulation code
+│   ├── sim_manager.rs            # Main simulation manager with JSON export
+│   ├── planet.rs                 # Planet data structures
+│   ├── plate.rs                  # Tectonic plate structures
 │   └── ...
 ├── examples/
-│   └── export_to_json.rs  # Script to generate JSON data
-├── public/                # Web assets and generated data
-├── src/                   # React components (web visualizer)
-│   ├── components/
-│   │   ├── GlobeVisualizer.js
-│   │   ├── PlateRenderer.js
-│   │   └── InfoPanel.js
-│   └── App.js
-└── package.json
+│   ├── export_to_json.rs         # Script to generate JSON data
+│   └── plate_generation/         # React Three Fiber visualizer
+│       ├── src/
+│       │   ├── components/
+│       │   │   ├── GlobeVisualizer.jsx
+│       │   │   ├── PlateRenderer.jsx
+│       │   │   └── InfoPanel.jsx
+│       │   ├── App.jsx
+│       │   └── main.jsx
+│       ├── public/
+│       │   └── simulation_data.json
+│       ├── package.json
+│       └── vite.config.js
+└── Cargo.toml
 ```
 
 ## Features
@@ -31,15 +36,16 @@ atmo-rust/
 - **JSON Export**: Export simulation data for visualization
 - **Database Storage**: Persistent storage using RocksDB
 
-### React Three Fiber Visualizer
+### React Three Fiber Visualizer (Vite)
 - **3D Globe**: Interactive sphere representing the planet
 - **Tectonic Plates**: Color-coded plates rendered on the globe surface
-- **Interactive Controls**: 
+- **Interactive Controls**:
   - Mouse drag to rotate
   - Scroll to zoom
   - Click plates for detailed information
 - **Information Panel**: Real-time display of simulation statistics
 - **Responsive Design**: Works on desktop and mobile
+- **Fast Development**: Powered by Vite for instant hot reload
 
 ## Getting Started
 
@@ -56,39 +62,31 @@ atmo-rust/
    cd atmo-rust
    ```
 
-2. **Quick Setup (Recommended)**
+2. **Build the Rust simulation**
    ```bash
-   npm run setup
-   ```
-   This script will:
-   - Check for Rust and Node.js
-   - Build the Rust simulation
-   - Install Node.js dependencies
-   - Generate initial simulation data
-
-3. **Manual Setup**
-   ```bash
-   # Install Rust dependencies
    cargo build
-
-   # Install Node.js dependencies
-   npm install
-
-   # Generate simulation data
-   npm run generate-data
    ```
 
 ### Running the Visualizer
 
-1. **Generate simulation data**
+1. **Navigate to the visualizer**
+   ```bash
+   cd examples/plate_generation
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Generate simulation data**
    ```bash
    npm run generate-data
    ```
-   This runs the Rust simulation and exports data to `public/simulation_data.json`
 
-2. **Start the web visualizer**
+4. **Start the development server**
    ```bash
-   npm start
+   npm run dev
    ```
    Open [http://localhost:3000](http://localhost:3000) to view the visualizer
 
@@ -162,16 +160,17 @@ The exported JSON contains:
 ### Adding New Features
 
 1. **Rust Side**: Modify simulation logic in `src/`
-2. **Web Side**: Add React components in `src/components/`
+2. **Web Side**: Add React components in `examples/plate_generation/src/components/`
 3. **Data Export**: Update `SimExportData` structure if needed
 
-### Building for Production
+### Building the Visualizer for Production
 
 ```bash
+cd examples/plate_generation
 npm run build
 ```
 
-This creates an optimized build in the `build/` folder.
+This creates an optimized build in the `dist/` folder.
 
 ## License
 

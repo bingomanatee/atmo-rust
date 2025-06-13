@@ -22,7 +22,7 @@ function InfoPanel({ simulationData, selectedPlate, onPlateSelect }) {
 
   return (
     <div className="info-panel">
-      <h3>Simulation Data</h3>
+      <h3>Plate Generation</h3>
       
       <div className="stat">
         <span className="stat-label">Planet Radius:</span>

@@ -3,7 +3,6 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Stars } from '@react-three/drei';
 import GlobeVisualizer from './components/GlobeVisualizer';
 import InfoPanel from './components/InfoPanel';
-import './App.css';
 
 function App() {
   const [simulationData, setSimulationData] = useState(null);
@@ -83,12 +82,12 @@ function App() {
         />
       </Canvas>
       
-      <InfoPanel
+      <InfoPanel 
         simulationData={simulationData}
         selectedPlate={selectedPlate}
         onPlateSelect={setSelectedPlate}
       />
-
+      
       <div className="controls">
         <h4>Controls</h4>
         <p>🖱️ Drag to rotate</p>

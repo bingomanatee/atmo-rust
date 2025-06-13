@@ -11,7 +11,7 @@ fn main() {
     let output_path = if args.len() > 1 {
         args[1].clone()
     } else {
-        "public/simulation_data.json".to_string()
+        "examples/plate_generation/public/simulation_data.json".to_string()
     };
 
     println!("Generating simulation data...");
