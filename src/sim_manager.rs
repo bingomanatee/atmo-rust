@@ -1,10 +1,21 @@
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
 use crate::planet::{Planet, PlanetParams};
 use crate::rock_store::RockStore;
 use crate::sim::{Sim, SimPlanetParams};
 use uuid::Uuid;
 use crate::plate::Plate;
 use crate::plate_generator::{GenerateRadiiParams, PartialPlateGenConfig, PlateGenerator};
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SimExportData {
+    pub sim: Sim,
+    pub planet: Planet,
+    pub plates: Vec<Plate>,
+}
 
 pub struct SimManager {
     sim_id: Uuid,
@@ -139,6 +150,34 @@ impl SimManager {
         let mut planet = self.planet().expect("cannot retrieve planet"); // reloading for integrity
         planet.plate_ids = plate_ids;
         self.store.put_planet(&planet);
+    }
+
+    /// Export simulation data to JSON format
+    pub fn export_data(&self) -> Result<SimExportData, String> {
+        let sim = self.sim()?;
+        let planet = self.planet()?;
+        let plates = self.plates().map_err(|e| format!("Failed to load plates: {}", e))?;
+
+        Ok(SimExportData {
+            sim,
+            planet,
+            plates,
+        })
+    }
+
+    /// Save simulation data to a JSON file
+    pub fn save_to_json<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
+        let export_data = self.export_data()?;
+        let json_string = serde_json::to_string_pretty(&export_data)
+            .map_err(|e| format!("Failed to serialize to JSON: {}", e))?;
+
+        let mut file = File::create(path)
+            .map_err(|e| format!("Failed to create file: {}", e))?;
+
+        file.write_all(json_string.as_bytes())
+            .map_err(|e| format!("Failed to write to file: {}", e))?;
+
+        Ok(())
     }
 }
 
