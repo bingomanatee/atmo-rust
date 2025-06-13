@@ -20,6 +20,7 @@ impl SimPlanetParams {
             sim_id,
             radius: self.radius,
             mantle_density_gcm3: self.mantle_density_gcm3,
+            plate_ids: None
         }
     }
 }
@@ -70,7 +71,7 @@ mod tests {
         // The planet's owner id should be the sim's id
         assert_eq!(planet.sim_id, sim.id);
         // The planet's radius should be as specified
-        assert_eq!(planet.radius, EARTH_RADIUS_KM);
+        assert_eq!(planet.radius_km, EARTH_RADIUS_KM);
         // The sim's planet_id should now be set to the planet's id
         assert_eq!(sim.planet_id, Some(planet.id));
     }

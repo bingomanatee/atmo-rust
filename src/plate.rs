@@ -1,5 +1,6 @@
 use glam::Vec3;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 pub const PLATELET_RESOLUTION: u8 = 3;
@@ -12,6 +13,7 @@ pub struct Plate {
     pub thickness_km: i32,
     pub density: f64,
     pub planet_id: Uuid,
+    pub platelet_ids: HashSet<Uuid>,
 }
 
 #[derive(Clone)]
@@ -26,12 +28,12 @@ pub struct PlateParams {
 impl Plate {
     /// Creates a new Plate instance with the given parameters.
     pub fn new(params: PlateParams) -> Self {
-
         let center = params.center;
         let radius_km = params.radius_km;
         let density = params.density;
         let thickness_km = params.thickness_km;
         let planet_id = params.planet_id;
+        let platelet_ids = HashSet::new();
 
         if center.x == 0.0 && center.y == 0.0 && center.z == 0.0 {
             panic!("plate cannot be at origin")
@@ -56,6 +58,7 @@ impl Plate {
             thickness_km,
             density,
             planet_id,
+            platelet_ids,
         }
     }
 }
@@ -67,7 +70,6 @@ pub struct Platelet {
     pub position_start: Option<Vec3>,
     pub velocity_start: Option<Vec3>,
     pub radius_km: i32,
-    pub h3_cell: u64, // CellIndex
+    pub h3_cell: u64,                 // CellIndex
     pub neighbors: [Option<Uuid>; 6], // exactly 6 slots, some may be None
 }
-

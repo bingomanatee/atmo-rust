@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -5,24 +7,30 @@ use uuid::Uuid;
 pub struct Planet {
     pub id: Uuid,
     pub sim_id: Uuid,
-    pub radius: i32,
+    pub radius_km: i32,
     pub mantle_density_gcm3: f64,
+    pub plate_ids: HashSet<Uuid>,
 }
 
 pub const EARTH_ID: Uuid = Uuid::from_u128(0x1234567890abcdef1234567890abcdef);
 pub const EARTH_SIM_ID: Uuid = Uuid::from_u128(0xfedcba9876543210fedcba9876543210);
 
-pub const EARTH: Planet = Planet {
-    radius: EARTH_RADIUS_KM,
+pub static EARTH: Lazy<Planet> =
+    Lazy::new(||
+    Planet {
+    radius_km: EARTH_RADIUS_KM,
     id: EARTH_ID,
     sim_id: EARTH_SIM_ID,
     mantle_density_gcm3: RHO_EARTH,
-};
+    plate_ids: HashSet::new(),
+});
+
 
 pub struct PlanetParams {
     pub sim_id: Uuid,
     pub radius: i32,
     pub mantle_density_gcm3: Option<f64>,
+    pub plate_ids: Option<HashSet<Uuid>>
 }
 
 impl Planet {
@@ -34,7 +42,8 @@ impl Planet {
         Planet {
             id: Uuid::new_v4(),
             sim_id: params.sim_id,
-            radius: params.radius,
+            radius_km: params.radius,
+            plate_ids: params.plate_ids.unwrap_or_else(HashSet::new),
             mantle_density_gcm3: params
                 .mantle_density_gcm3
                 .unwrap_or_else(|| estimate_mantle_density(params.radius, None)),
@@ -43,7 +52,7 @@ impl Planet {
 
     /// Returns the surface area of the planet in square kilometers.
     pub fn surface_area_km2(&self) -> f32 {
-        (4.0 * std::f64::consts::PI * (self.radius as f32).powi(2) as f64 )as f32
+        (4.0 * std::f64::consts::PI * (self.radius_km as f32).powi(2) as f64 )as f32
     }
 }
 

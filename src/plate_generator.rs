@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::helpers::{rad_to_area_int, sample_power_law};
 use crate::planet::Planet;
 use crate::plate::Plate;
@@ -6,6 +7,7 @@ use glam::Vec3;
 use rand::Rng;
 use std::f64::consts::FRAC_PI_6;
 use uuid::Uuid;
+use crate::h30_utils::PointSampler;
 
 pub struct PlateGeneratorConfig {
     pub target_coverage: f64,
@@ -23,11 +25,12 @@ pub struct PartialPlateGenConfig {
     pub power_law_exponent: Option<f64>,
     pub min_density: Option<f64>,
     pub max_density: Option<f64>,
-    pub min_thickness: Option<i32>,
-    pub max_thickness: Option<i32>,
+    pub min_thickness_km: Option<i32>,
+    pub max_thickness_km: Option<i32>,
     pub variation_factor: Option<f64>,
-    pub max_plate_radius: Option<f64>,
+    pub max_plate_radius_radians: Option<f64>,
 }
+
 impl PlateGeneratorConfig {
     pub fn from_partial(partial: PartialPlateGenConfig) -> PlateGeneratorConfig {
         let variation_factor = partial.variation_factor.unwrap_or(0.1);
@@ -40,10 +43,10 @@ impl PlateGeneratorConfig {
             power_law_exponent: partial.power_law_exponent.unwrap_or(3.0),
             min_density: partial.min_density.unwrap_or(2.6),
             max_density: partial.max_density.unwrap_or(3.3),
-            min_thickness_km: partial.min_thickness.unwrap_or(7),
-            max_thickness_km: partial.max_thickness.unwrap_or(35),
+            min_thickness_km: partial.min_thickness_km.unwrap_or(7),
+            max_thickness_km: partial.max_thickness_km.unwrap_or(35),
             variation_factor: partial.variation_factor.unwrap_or(0.1),
-            max_plate_radius: Option::from(partial.max_plate_radius.unwrap_or(FRAC_PI_6)),
+            max_plate_radius: Option::from(partial.max_plate_radius_radians.unwrap_or(FRAC_PI_6)),
         }
     }
 }
@@ -55,33 +58,37 @@ pub struct GenerateRadiiParams {
     pub exponent: f64,
 }
 
-pub struct PlateSpectrumGenerator {
+pub struct PlateGenerator<'a> {
     config: PlateGeneratorConfig,
-    planet: Planet,
+    planet: &'a Planet,
+    point_sampler: PointSampler,
 }
 
-impl PlateSpectrumGenerator {
-    pub fn new(partial_plate_gen_config: PartialPlateGenConfig, planet: Planet) -> Self {
+
+impl<'a> PlateGenerator<'a>  {
+
+    pub fn new(partial_plate_gen_config: PartialPlateGenConfig, planet: &'a Planet) -> Self {
         let config = PlateGeneratorConfig::from_partial(partial_plate_gen_config);
-        Self { config, planet }
+        let point_sampler = PointSampler::new(planet.radius_km);
+        Self { config, planet, point_sampler }
     }
     pub fn surface_area_km2(&self) -> f64 {
-        4.0 * std::f64::consts::PI * (self.planet.radius as f64).powi(2)
+        4.0 * std::f64::consts::PI * (self.planet.radius_km as f64).powi(2)
     }
 
-    pub fn random_planet_point(&self) -> Vec3 {
-        Vec3::new(0.0, 100.0, 0.0)
+    pub fn random_planet_point(&mut self) -> Vec3 {
+        self.point_sampler.random_point_on_planet()
     }
 
-    pub fn generate_one(&self, radius_km: f64, planet_id: Uuid) -> Plate {
+    pub fn generate_one(&mut self, radius_km: i32, planet_id: Uuid) -> Plate {
         let id = Uuid::new_v4();
         let center = self.random_planet_point();
 
         // thickness: vary based on radius
         let t_variation = self.config.variation_factor;
-        let base_thickness = self.scaled_thickness(radius_km) as f64;
-        let max_thickness = base_thickness * (1.0 + t_variation);
-        let min_thickness = base_thickness * (1.0 - t_variation);
+        let base_thickness = self.scaled_thickness(radius_km as f64) ;
+        let max_thickness = base_thickness as f64 * (1.0 + t_variation);
+        let min_thickness = base_thickness as f64 * (1.0 - t_variation);
 
         let thickness_km =
             vary_within_range(min_thickness, max_thickness, self.config.variation_factor)
@@ -105,13 +112,14 @@ impl PlateSpectrumGenerator {
             thickness_km: thickness_km as i32,
             density,
             planet_id,
+            platelet_ids: HashSet::new(),
         }
     }
 
     // Convert max_plate_radius (radians) to kilometers on the planet surface
     fn max_plate_radius_km(&self) -> f64 {
         let max_rad = self.config.max_plate_radius.unwrap_or(FRAC_PI_6);
-        max_rad * (self.planet.radius as f64)
+        max_rad * (self.planet.radius_km as f64)
     }
 
     fn scaled_thickness(&self, radius_km: f64) -> i32 {
@@ -129,14 +137,14 @@ impl PlateSpectrumGenerator {
         thickness.round() as i32
     }
 
-    fn scaled_density(&self, radius_km: f64) -> f64 {
+    fn scaled_density(&self, radius_km: i32) -> f64 {
         let config = &self.config;
         let d_min = config.min_density;
         let d_max = config.max_density;
 
         let max_radius_km = self.max_plate_radius_km();
 
-        let ratio = (radius_km / max_radius_km).clamp(0.0, 1.0); // direct scaling
+        let ratio = (radius_km as f64 / max_radius_km).clamp(0.0, 1.0); // direct scaling
         (d_min + (d_max - d_min) * ratio).clamp(config.min_density, config.max_density)
     }
     pub fn generate_radii(&self, params: GenerateRadiiParams) -> Vec<i32> {
@@ -146,11 +154,12 @@ impl PlateSpectrumGenerator {
         let exponent = params.exponent;
         let planet = &self.planet;
 
+        println!("generate_radii between {} and {}", min_radius, max_radius);
         assert!(min_radius < max_radius, "min rad must be < max_rad");
         assert!(
-            max_radius < planet.radius / 2,
-            "radii cannot be > 1/2 planet radius {}",
-            planet.radius
+            max_radius < planet.radius_km,
+            "radii cannot be > planet radius {}",
+            planet.radius_km
         );
 
         let mut radii: Vec<i32> = Vec::new();
@@ -261,15 +270,15 @@ mod tests {
             power_law_exponent: Some(2.5),
             min_density: Some(2.7),
             max_density: Some(3.1),
-            min_thickness: Some(10),
-            max_thickness: Some(30),
+            min_thickness_km: Some(10),
+            max_thickness_km: Some(30),
             variation_factor: Some(0.1),
-            max_plate_radius: Some(FRAC_PI_6),
+            max_plate_radius_radians: Some(FRAC_PI_6),
         };
 
-        let generator = PlateSpectrumGenerator::new(full_config, EARTH);
+        let mut generator = PlateGenerator::new(full_config, &EARTH);
 
-        let radius_km = 100.0;
+        let radius_km = 100;
         let planet_id = Uuid::new_v4();
         let plate = generator.generate_one(radius_km, planet_id);
 
@@ -290,15 +299,15 @@ mod tests {
             power_law_exponent: None,
             min_density: None,
             max_density: None,
-            min_thickness: None,
-            max_thickness: None,
+            min_thickness_km: None,
+            max_thickness_km: None,
             variation_factor: None,
-            max_plate_radius: None,
+            max_plate_radius_radians: None,
         };
 
-        let generator = PlateSpectrumGenerator::new(partial_config, EARTH);
+        let mut generator = PlateGenerator::new(partial_config, &EARTH);
 
-        let radius_km = 50.0;
+        let radius_km = 50;
         let planet_id = Uuid::new_v4();
         let plate = generator.generate_one(radius_km, planet_id);
 
@@ -330,12 +339,12 @@ mod tests {
             power_law_exponent: None,
             min_density: None,
             max_density: None,
-            min_thickness: None,
-            max_thickness: None,
+            min_thickness_km: None,
+            max_thickness_km: None,
             variation_factor: None,
-            max_plate_radius: None,
+            max_plate_radius_radians: None,
         };
-        let generator = PlateSpectrumGenerator::new(partial_config, EARTH);
+        let generator = PlateGenerator::new(partial_config, &EARTH);
 
         let radii = generator.generate_radii(GenerateRadiiParams {
             target_coverage,
