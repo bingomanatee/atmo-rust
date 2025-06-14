@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use crate::helpers::{rad_to_area_int, sample_power_law};
 use crate::planet::Planet;
-use crate::plate::Plate;
+use crate::plate::{Plate, PlateParams};
 use crate::vary::vary_within_range;
 use glam::Vec3;
 use rand::Rng;
 use std::f64::consts::FRAC_PI_6;
 use uuid::Uuid;
+use crate::geoconverter::GeoCellConverter;
 use crate::h30_utils::PointSampler;
 
 pub struct PlateGeneratorConfig {
@@ -81,7 +82,6 @@ impl<'a> PlateGenerator<'a>  {
     }
 
     pub fn generate_one(&mut self, radius_km: i32, planet_id: Uuid) -> Plate {
-        let id = Uuid::new_v4();
         let center = self.random_planet_point();
 
         // thickness: vary based on radius
@@ -104,16 +104,19 @@ impl<'a> PlateGenerator<'a>  {
         let min_density = base_density * (1.0 - t_variation);
         let density = vary_within_range(min_density, max_density, self.config.variation_factor)
             .clamp(self.config.min_density, self.config.max_density);
-
-        Plate {
-            id,
-            center,
-            radius_km: radius_km as i32,
-            thickness_km: thickness_km as i32,
-            density,
-            planet_id,
-            platelet_ids: HashSet::new(),
-        }
+        
+        
+        
+        Plate::new(
+            PlateParams {
+                center,
+                radius_km: radius_km as i32,
+                thickness_km: thickness_km as i32,
+                density,
+                planet_id,
+                planet_radius_km: self.planet.radius_km
+            }
+        ) 
     }
 
     // Convert max_plate_radius (radians) to kilometers on the planet surface

@@ -1,9 +1,11 @@
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use h3o::{CellIndex, Resolution};
 use uuid::Uuid;
+use crate::geoconverter::GeoCellConverter;
 
-pub const PLATELET_RESOLUTION: u8 = 3;
+pub const PLATE_RESOLUTION: Resolution = Resolution::Two;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Plate {
@@ -13,7 +15,7 @@ pub struct Plate {
     pub thickness_km: i32,
     pub density: f64,
     pub planet_id: Uuid,
-    pub platelet_ids: HashSet<Uuid>,
+    pub h3o_l2_cell: CellIndex, // starting cell
 }
 
 #[derive(Clone)]
@@ -23,6 +25,7 @@ pub struct PlateParams {
     pub thickness_km: i32,
     pub density: f64,
     pub planet_id: Uuid,
+    pub planet_radius_km: i32,
 }
 
 impl Plate {
@@ -33,7 +36,7 @@ impl Plate {
         let density = params.density;
         let thickness_km = params.thickness_km;
         let planet_id = params.planet_id;
-        let platelet_ids = HashSet::new();
+        let planet_radius_km = params.planet_radius_km;
 
         if center.x == 0.0 && center.y == 0.0 && center.z == 0.0 {
             panic!("plate cannot be at origin")
@@ -50,26 +53,17 @@ impl Plate {
         if thickness_km <= 0 {
             panic!("thickness must be a positive number")
         }
-
+        
+        let gc = GeoCellConverter::new(planet_radius_km as f64, PLATE_RESOLUTION);
+        let location = gc.randomize_point_on_sphere(center);
         Self {
             id: Uuid::new_v4(),
-            center,
+            center: location,
             radius_km,
             thickness_km,
             density,
             planet_id,
-            platelet_ids,
+            h3o_l2_cell: gc.vec3_to_cell(location).unwrap()
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Platelet {
-    pub id: Uuid,
-    pub plate_id: Option<u64>,
-    pub position_start: Option<Vec3>,
-    pub velocity_start: Option<Vec3>,
-    pub radius_km: i32,
-    pub h3_cell: u64,                 // CellIndex
-    pub neighbors: [Option<Uuid>; 6], // exactly 6 slots, some may be None
 }

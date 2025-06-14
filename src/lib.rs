@@ -7,3 +7,4 @@ mod rock_store;
 mod helpers;
 mod sim_manager;
 mod h30_utils;
+mod geoconverter;

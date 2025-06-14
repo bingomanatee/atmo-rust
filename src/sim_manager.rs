@@ -10,7 +10,7 @@ use crate::plate::Plate;
 use crate::plate_generator::{GenerateRadiiParams, PartialPlateGenConfig, PlateGenerator};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SimExportData {
     pub sim: Sim,
     pub planet: Planet,
@@ -140,16 +140,15 @@ impl SimManager {
 
 
         let mut plate_ids: HashSet<Uuid> = HashSet::new();
-        for radius in &radii {
+        for radius in &radii { // @TODO: put in a different index
             let plate = generator.generate_one(*radius, planet.id);
             let _ = self.store.put_plate(&plate);
             plate_ids.insert(plate.id);
         }
-
-
+        
         let mut planet = self.planet().expect("cannot retrieve planet"); // reloading for integrity
         planet.plate_ids = plate_ids;
-        self.store.put_planet(&planet);
+        self.store.put_planet(&planet).expect("Cannot put planet");
     }
 
     /// Export simulation data to JSON format

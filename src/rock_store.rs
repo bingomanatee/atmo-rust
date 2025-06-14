@@ -2,7 +2,7 @@ use rocksdb::{DB, Options};
 use uuid::Uuid;
 use bincode;
 use crate::planet::Planet;
-use crate::plate::{Plate, Platelet};
+use crate::plate::{Plate};
 use crate::sim::Sim;
 
 pub struct RockStore {
@@ -32,12 +32,6 @@ impl RockStore {
 
     fn key_plate(id: &Uuid) -> Vec<u8> {
         let mut key = b"plate:".to_vec();
-        key.extend(id.as_bytes());
-        key
-    }
-
-    fn key_platelet(id: &Uuid) -> Vec<u8> {
-        let mut key = b"platelet:".to_vec();
         key.extend(id.as_bytes());
         key
     }
@@ -94,25 +88,6 @@ impl RockStore {
             Some(value) => {
                 let plate: Plate = bincode::deserialize(&value).unwrap();
                 Ok(Some(plate))
-            }
-            None => Ok(None),
-        }
-    }
-
-    // Save Platelet
-    pub fn put_platelet(&self, platelet: &Platelet) -> Result<(), rocksdb::Error> {
-        let key = Self::key_platelet(&platelet.id);
-        let value = bincode::serialize(platelet).unwrap();
-        self.db.put(key, value)
-    }
-
-    // Get Platelet
-    pub fn get_platelet(&self, id: &Uuid) -> Result<Option<Platelet>, rocksdb::Error> {
-        let key = Self::key_platelet(id);
-        match self.db.get(key)? {
-            Some(value) => {
-                let platelet: Platelet = bincode::deserialize(&value).unwrap();
-                Ok(Some(platelet))
             }
             None => Ok(None),
         }

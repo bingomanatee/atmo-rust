@@ -1,177 +1,108 @@
-# Atmo Rust - Atmospheric Simulation Visualizer
+# Plate Simulation System: Design Overview
 
-A Rust-based atmospheric simulation with a React Three Fiber web visualizer for tectonic plates on a 3D globe.
+This document outlines the core simulation architecture for a tectonic and geodynamic model based on a hexagonal grid system (H3) and pressure-driven mechanics.
 
-## Project Structure
+## Key Grid Assumptions
 
-```
-atmo-rust/
-├── src/                           # Rust simulation code
-│   ├── sim_manager.rs            # Main simulation manager with JSON export
-│   ├── planet.rs                 # Planet data structures
-│   ├── plate.rs                  # Tectonic plate structures
-│   └── ...
-├── examples/
-│   ├── export_to_json.rs         # Script to generate JSON data
-│   └── plate_generation/         # React Three Fiber visualizer
-│       ├── src/
-│       │   ├── components/
-│       │   │   ├── GlobeVisualizer.jsx
-│       │   │   ├── PlateRenderer.jsx
-│       │   │   └── InfoPanel.jsx
-│       │   ├── App.jsx
-│       │   └── main.jsx
-│       ├── public/
-│       │   └── simulation_data.json
-│       ├── package.json
-│       └── vite.config.js
-└── Cargo.toml
-```
+* **Planetary resolution base**: H3 resolution **L2**
+* **Platelets**: Spawn from **L3** cells
 
-## Features
+    * Initially snapped to L3 grid but become **free-floating 3D agents**
+    * Store: momentum (Vec3), thickness, density, compression, cohesion
+* **Pressure cells**: Use **L3** for pressure simulation (matches platelets)
 
-### Rust Simulation
-- **Planet Generation**: Create planets with configurable radius and density
-- **Tectonic Plate Simulation**: Generate realistic tectonic plates with varying sizes, densities, and thicknesses
-- **JSON Export**: Export simulation data for visualization
-- **Database Storage**: Persistent storage using RocksDB
+## Simulation Layers
 
-### React Three Fiber Visualizer (Vite)
-- **3D Globe**: Interactive sphere representing the planet
-- **Tectonic Plates**: Color-coded plates rendered on the globe surface
-- **Interactive Controls**:
-  - Mouse drag to rotate
-  - Scroll to zoom
-  - Click plates for detailed information
-- **Information Panel**: Real-time display of simulation statistics
-- **Responsive Design**: Works on desktop and mobile
-- **Fast Development**: Powered by Vite for instant hot reload
+### 1. Platelet Model
 
-## Getting Started
+* Each L3 cell starts with an **oceanic platelet**
+* Platelets have a stack of 1–3 materials:
 
-### Prerequisites
-- Rust (latest stable)
-- Node.js (v16 or later)
-- npm or yarn
+    * Oceanic
+    * Mid-crust (thicker intermediate zones)
+    * Continental
+* Compression/tension modifies:
 
-### Installation
+    * Stack thickness and density
+    * Lateral and vertical momentum
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd atmo-rust
-   ```
+### 2. Cohesion and Neighbor System
 
-2. **Build the Rust simulation**
-   ```bash
-   cargo build
-   ```
+* Platelets track neighbor links (initially via H3 L3 neighbors)
+* Cohesion between neighbors evolves over time:
 
-### Running the Visualizer
+    * High compression → stronger bonds
+    * Tension or shear → weakening, potential fracture
 
-1. **Navigate to the visualizer**
-   ```bash
-   cd examples/plate_generation
-   ```
+### 3. Pressure Model
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
+* Each L3 cell stores a scalar **pressure value**
+* **Uniform base pressure** across planet
+* Pressure flows **laterally** to lower-pressure neighbors
+* If pressure **accumulates beyond a threshold**, it triggers an **upwell** (volcano event)
 
-3. **Generate simulation data**
-   ```bash
-   npm run generate-data
-   ```
+### 4. Volcano / Upwell System (Edge-Free)
 
-4. **Start the development server**
-   ```bash
-   npm run dev
-   ```
-   Open [http://localhost:3000](http://localhost:3000) to view the visualizer
+* Upwells occur at pressure cells, not along explicit edges
+* Volcano event triggers if:
 
-### Manual Data Generation
+    * Pressure > threshold (e.g. ambient + crust thickness factor)
+    * Crust above is not too thick
+* Upwell creates or thickens a platelet stack
 
-You can also generate data manually with custom parameters:
+    * Adds mass to local platelet
+    * Slightly boosts vertical/lateral momentum
 
-```bash
-# Generate with default parameters
-cargo run --example export_to_json
+### 5. Downwells / Absorption
 
-# Generate to specific file
-cargo run --example export_to_json -- custom_output.json
-```
+* High downward pressure zones with:
 
-## Usage
+    * **Dense crust above**
+    * **Low upward pressure**
+* May cause platelet removal or density compression
+* Simulates subduction without explicit edge modeling
 
-### Web Interface
-- **Rotate**: Click and drag to rotate the globe
-- **Zoom**: Use mouse wheel to zoom in/out
-- **Select Plates**: Click on colored regions to see plate details
-- **View Statistics**: Check the info panel for simulation data
+### 6. Plate Motion Mechanics
 
-### Customizing Simulations
+* Each platelet's momentum adjusted by:
 
-Edit `examples/export_to_json.rs` to modify simulation parameters:
+    * Pressure gradients (sideways push)
+    * Crust collisions (repulsion, compression)
+* Platelets with aligned vectors may bond into **plates**
+* Cohesion governs bond stability and momentum transfer
 
-```rust
-let planet_config = SimPlanetParams {
-    radius: 6372,           // Planet radius in km
-    mantle_density_gcm3: Some(4.5), // Density in g/cm³
-};
+## Simulation Cycle
 
-// Adjust plate coverage (0.0 to 1.0)
-manager.make_plates(0.6);
-```
+1. **Partition platelets** into H3 L2 bins
+2. **Compute neighbor-based interactions** (tension, compression)
+3. **Move platelets** by momentum
+4. **Update cohesion** and potential bonds
+5. **Adjust global pressure field**
+6. **Check for volcanoes (upwells) and downwells**
+7. **Form or fracture plates**
+8. Repeat
 
-## Data Format
+## Parallelization Plan
 
-The exported JSON contains:
-```json
-{
-  "sim": {
-    "id": "uuid",
-    "planet_id": "uuid",
-    "sim_id": "uuid"
-  },
-  "planet": {
-    "id": "uuid",
-    "sim_id": "uuid", 
-    "radius_km": 6372,
-    "mantle_density_gcm3": 4.5,
-    "plate_ids": ["uuid1", "uuid2", ...]
-  },
-  "plates": [
-    {
-      "id": "uuid",
-      "center": {"x": 0.5, "y": 0.3, "z": 0.8},
-      "radius_km": 1500,
-      "thickness_km": 45,
-      "density": 3.2,
-      "planet_id": "uuid",
-      "platelet_ids": []
-    }
-  ]
-}
-```
+* Partition planet into L2 zones
+* Each worker processes platelets within zone and 1-ring neighbors
+* Store data in RocksDB column families for parallel-safe read/write
+* Pressure model operates on L3 grid and is globally synchronized each cycle
 
-## Development
+## Long-Term Dynamics
 
-### Adding New Features
+* Continental plates emerge through collision/volcano events
+* Platelets can dissolve due to downwells under continental mass
+* Plate boundaries are emergent, not explicitly modeled
+* Volcano distribution is a product of crust/pressure dynamics
 
-1. **Rust Side**: Modify simulation logic in `src/`
-2. **Web Side**: Add React components in `examples/plate_generation/src/components/`
-3. **Data Export**: Update `SimExportData` structure if needed
+## Advantages
 
-### Building the Visualizer for Production
+* Simplifies traditional ridge/trench modeling
+* Unifies volcanoes, crust creation, and plate growth
+* Enables efficient parallel execution
+* Scales naturally with H3 grid resolution
 
-```bash
-cd examples/plate_generation
-npm run build
-```
+---
 
-This creates an optimized build in the `dist/` folder.
-
-## License
-
-[Add your license here]
+This model allows realism and procedural emergence with reasonable compute cost and no hard-coded fault lines. Plates are not primary; **platelets and pressure are the true actors**.
