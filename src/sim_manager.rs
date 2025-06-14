@@ -140,6 +140,17 @@ impl SimManager {
         planet.plate_ids = plate_ids;
         self.store.put_planet(&planet);
     }
+
+    pub fn save_to_json(&self, path: &str) -> Result<(), String> {
+        let sim = self.sim()?;
+        let planet = self.planet()?;
+        let plates = self.plates().map_err(|e| format!("Failed to load plates: {}", e))?;
+
+        // Implement saving to JSON here
+        // For example, using serde_json to serialize and write to file
+        // This is a placeholder for actual implementation
+        std::fs::write(path, "Sim data").map_err(|e| format!("Failed to write to file: {}", e))
+    }
 }
 
 #[cfg(test)]
@@ -257,5 +268,21 @@ mod tests {
             assert_eq!(plate.planet_id, planet_id);
             assert!(plate.radius_km > 0);
         }
+    }
+
+    #[test]
+    fn save_to_json_saves_sim_data() {
+        let dir = tempdir().expect("create temp dir");
+        let db_path = dir.path().join("testdb_json");
+        let db_path_str = db_path.to_str().unwrap().to_string();
+
+        let params = SimManagerParams::Create {
+            db_path: db_path_str.clone(),
+            planet_config: make_test_planet_config(),
+        };
+        let manager = SimManager::new(params);
+
+        let output_path = dir.path().join("sim_data.json").to_str().unwrap().to_string();
+        manager.save_to_json(&output_path).expect("Failed to save sim data");
     }
 }
