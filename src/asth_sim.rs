@@ -1,9 +1,11 @@
+use rayon::prelude::*;
+use crate::asth_process_cell::{process_cell, ProcessResult};
 use crate::asthenosphere::{ASTH_RES, AsthenosphereCell, CellsForPlanetArgs};
 use crate::h30_utils::H3Utils;
 use crate::planet::Planet;
 use crate::rock_store::RockStore;
-use h3o::{CellIndex, Resolution};
-use noise::{NoiseFn, Perlin};
+use h3o::CellIndex;
+use rand::Rng;
 
 pub struct AsthSim<'a> {
     store: RockStore,
@@ -16,6 +18,13 @@ pub struct AsthSimArgs<'a> {
     pub planet: &'a Planet,
     pub mio_years: u32,
     pub resolution: Resolution,
+}
+
+pub struct VolumeStats {
+    pub volume_added: f32,
+    pub volume_removed: f32,
+    pub total_volume: f32,
+    pub mean_energy: f32,
 }
 
 impl<'a> AsthSim<'a> {
@@ -45,67 +54,69 @@ impl<'a> AsthSim<'a> {
     }
 
     pub fn run(&self) {
-        for current in 1..self.mio_years {
-            self.advance(current);
+        // Print table header
+        println!(
+            "{:<6} | {:<13} | {:<14} | {:<13} | {:<11}",
+            "Step", "Volume Added", "Volume Removed", "Total Volume", "Mean Energy/cell"
+        );
+        println!("{}", "-".repeat(65));
+
+        for current in 1..=self.mio_years {
+            let stats = self.advance(current);
+            if (current % 5) == 0 {
+                println!(
+                    "{:<6} | {:<13.2} | {:<14.2} | {:<13.2} | {:<11.2}",
+                    current, stats.volume_added, stats.volume_removed, stats.total_volume, stats.mean_energy
+                );
+            }
         }
     }
 
-    fn advance(&self, to_mio_years: u32) {
-        let per = Perlin::new(100 + to_mio_years);
-        H3Utils::iter_at(ASTH_RES, |l2_cell| {
-            match self.store.get_asth(l2_cell, to_mio_years - 1) {
-                Ok(Some(old_cell)) => {
-                    let [x, y, z] = old_cell.location.to_array();
-                    let rand = per.get([x as f64, y as f64, z as f64]);
-                    let progress = to_mio_years as f32 / self.mio_years as f32;
-                    let average = AVERAGE_ENEGY_AT_START as f32 - (AE_SPAN as f32 * progress);
-                    let volume_to_add = average * (2.0 + rand as f32) / 3.0;
-                    let sunk_volume = old_cell.sunk_volume();
-                    let mut new_volume = old_cell.volume + volume_to_add - sunk_volume;
+    fn advance(&self, to_mio_years: u32) -> VolumeStats {
+        // Collect all cells at ASTH_RES into a Vec<CellIndex>
+        let cells: Vec<CellIndex> = {
+            let mut v = Vec::new();
+            H3Utils::iter_at(ASTH_RES, |cell| v.push(cell));
+            v
+        };
 
-                    let mut new_energy = ((0.98 * old_cell.energy_k as f32 * old_cell.volume)
-                        + (K_PER_VOLUME * volume_to_add))
-                        / (volume_to_add + old_cell.volume);
+        // Process cells in parallel using Rayon
+        let results: Vec<ProcessResult> = cells
+            .par_iter()
+            .filter_map(|l2_cell| process_cell(&self.store, *l2_cell, to_mio_years, self.mio_years).ok())
+            .collect();
+        
+        let volume_added = results.iter().map(|r| r.volume_added).sum();
+        let volume_removed = results.iter().map(|r| r.volume_removed).sum();
+        let total_volume = results.iter().map(|r| r.new_volume).sum();
+        let total_energy: f32 = results.iter().map(|r| r.total_energy).sum();
+        let cell_count = results.len() as f32;
 
-                    if sunk_volume > 0.0 {
-                        new_energy *= (old_cell.volume - sunk_volume) / old_cell.volume;
-                    }
-
-                    // @TODO: remove some mass to the lithosphere.
-
-                    let new_cell = AsthenosphereCell {
-                        step: to_mio_years,
-                        volume: new_volume,
-                        energy_k: new_energy as u32,
-                        ..old_cell.clone()
+        let mean_energy = if cell_count > 0.0 {
+            total_energy / cell_count
+        } else {
+            0.0
                     };
-                    self.store
-                        .put_asth(&new_cell)
-                        .expect("cannot save new cell")
-                }
-                Ok(None) => {
-                    panic!("cannot find cell {}, {}", l2_cell, to_mio_years - 1)
-                }
-                Err(e) => {
-                    panic!("Error fetching asth cell: {:?}", e);
-                }
-            }
-        });
+
+        VolumeStats {
+            volume_added,
+            volume_removed,
+            total_volume,
+            mean_energy,
+        }
     }
 }
 
-const AVERAGE_ENEGY_AT_START: u32 = 20;
-const AVERAGE_ENERGY_AT_END: u32 = 5;
+pub const AVERAGE_ENERGY_AT_START: f32 = 2.0;
+pub const AVERAGE_ENERGY_AT_END: f32 = 0.5;
 
-const AE_SPAN: u32 = AVERAGE_ENEGY_AT_START - AVERAGE_ENERGY_AT_END;
-const K_PER_VOLUME: f32 = 1800.0;
-
+pub const AE_SPAN: f32 = AVERAGE_ENERGY_AT_START - AVERAGE_ENERGY_AT_END;
+pub const K_PER_VOLUME: f32 = 1000.0;
+pub const COOLING_RATE: f32 = 0.95;
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::planet::{EARTH_RADIUS_KM, PlanetParams, RHO_EARTH};
-    use h3o::Resolution;
-    use std::path::PathBuf;
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -128,7 +139,7 @@ mod tests {
         let db_path = temp_dir.path().to_str().unwrap().to_string();
 
         let planet = create_test_planet();
-        let mio_years = 100;
+        let mio_years = 500;
         let resolution = ASTH_RES;
 
         // Create the simulation
@@ -144,23 +155,23 @@ mod tests {
 
         // For each step, collect all cells and compute mean energy
         for step in 1..mio_years {
-            let mut sum_energy = 0.0f32;
-            let mut count = 0usize;
+            let mut total_energy = 0.0f32;
+            let mut cell_count = 0usize;
 
             H3Utils::iter_at(ASTH_RES, |l2_cell| {
                 if let Ok(Some(cell)) = sim.store.get_asth(l2_cell, step) {
-                    sum_energy += cell.energy_k as f32;
-                    count += 1;
+                    total_energy += cell.energy_k as f32;
+                    cell_count += 1;
                 }
             });
 
-            let mean_energy = if count == 0 {
+            let mean_energy = if cell_count == 0 {
                 0.0
             } else {
-                sum_energy / count as f32
+                total_energy / cell_count as f32
             };
 
-            println!("Step {}: mean energy = {:.2}", step, mean_energy);
+          // println!("Step {}: mean energy = {:.2}", step, mean_energy);
         }
     }
 }

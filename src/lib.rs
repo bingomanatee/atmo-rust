@@ -11,3 +11,4 @@ mod geoconverter;
 mod thermal_plate_generator;
 mod asthenosphere;
 mod asth_sim;
+mod asth_process_cell;
