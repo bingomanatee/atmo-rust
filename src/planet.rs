@@ -8,8 +8,7 @@ pub struct Planet {
     pub id: Uuid,
     pub sim_id: Uuid,
     pub radius_km: i32,
-    pub mantle_density_gcm3: f64,
-    pub plate_ids: HashSet<Uuid>,
+    pub mantle_density_gcm3: f64
 }
 
 pub const EARTH_ID: Uuid = Uuid::from_u128(0x1234567890abcdef1234567890abcdef);
@@ -22,7 +21,6 @@ pub static EARTH: Lazy<Planet> =
     id: EARTH_ID,
     sim_id: EARTH_SIM_ID,
     mantle_density_gcm3: RHO_EARTH,
-    plate_ids: HashSet::new(),
 });
 
 
@@ -30,7 +28,6 @@ pub struct PlanetParams {
     pub sim_id: Uuid,
     pub radius: i32,
     pub mantle_density_gcm3: Option<f64>,
-    pub plate_ids: Option<HashSet<Uuid>>
 }
 
 impl Planet {
@@ -43,7 +40,6 @@ impl Planet {
             id: Uuid::new_v4(),
             sim_id: params.sim_id,
             radius_km: params.radius,
-            plate_ids: params.plate_ids.unwrap_or_else(HashSet::new),
             mantle_density_gcm3: params
                 .mantle_density_gcm3
                 .unwrap_or_else(|| estimate_mantle_density(params.radius, None)),

@@ -73,8 +73,8 @@ impl<'a> PlateGenerator<'a>  {
         let point_sampler = PointSampler::new(planet.radius_km);
         Self { config, planet, point_sampler }
     }
-    pub fn surface_area_km2(&self) -> f64 {
-        4.0 * std::f64::consts::PI * (self.planet.radius_km as f64).powi(2)
+    pub fn surface_area_km2(&self) -> f32 {
+        self.planet.surface_area_km2()
     }
 
     pub fn random_planet_point(&mut self) -> Vec3 {

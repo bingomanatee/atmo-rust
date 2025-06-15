@@ -76,6 +76,22 @@ impl PointSampler {
     }
 }
 
+pub struct H3Utils;
+
+impl H3Utils {
+    /// Iterate over all H3 cells at the given resolution, calling `callback` for each cell.
+    pub fn iter_at<F>(resolution: Resolution, mut callback: F)
+    where
+        F: FnMut(CellIndex),
+    {
+        for base_cell in CellIndex::base_cells() {
+            for cell in base_cell.children(resolution) {
+                callback(cell);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
