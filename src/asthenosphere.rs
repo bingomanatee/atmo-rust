@@ -119,5 +119,5 @@ mod tests {
 }
 
 const MAX_SUNK_PERCENT: f32 = 0.15;
-const MAX_SUNK_TEMP: f32 = 1300.0;
+const MAX_SUNK_TEMP: f32 = 2000.0;
 const MIN_SUNK_TEMP: f32 = 1000.0;
