@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use rocksdb::LogLevel::Error;
 use crate::planet::{Planet, PlanetParams};
 use crate::rock_store::RockStore;
 use crate::sim::{Sim, SimPlanetParams};
@@ -9,6 +10,35 @@ use uuid::Uuid;
 use crate::plate::Plate;
 use crate::plate_generator::{GenerateRadiiParams, PartialPlateGenConfig, PlateGenerator};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+pub enum SimManagerError {
+    RocksDb(rocksdb::Error),
+    Bincode(bincode::Error),
+}
+
+impl std::fmt::Display for SimManagerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SimManagerError::RocksDb(e) => write!(f, "RocksDB error: {}", e),
+            SimManagerError::Bincode(e) => write!(f, "Bincode error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for SimManagerError {}
+
+impl From<rocksdb::Error> for SimManagerError {
+    fn from(e: rocksdb::Error) -> Self {
+        SimManagerError::RocksDb(e)
+    }
+}
+
+impl From<bincode::Error> for SimManagerError {
+    fn from(e: bincode::Error) -> Self {
+        SimManagerError::Bincode(e)
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SimExportData {
@@ -41,7 +71,7 @@ impl SimManager {
                     RockStore::open(&db_path).expect("failed to open RocksDB for SimManager");
                 let sim = store
                     .get_sim(&sim_id)
-                    .expect("DB error loading Sim")
+                    .expect("failed to load Sim")
                     .expect("No Sim found with given id");
 
                 SimManager {
@@ -88,36 +118,32 @@ impl SimManager {
         }
     }
 
-    pub fn plates(&self) -> Result<Vec<Plate>, rocksdb::Error> {
-        let mut plates : Vec<Plate> = Vec::new();
-        let planet = self.planet().unwrap();
+    pub fn each_plate<F, E>(&self, mut callback: F) -> Result<(), E>
+    where
+        F: FnMut(Plate, Box<[u8]>) -> Result<(), E>,
+        E: From<rocksdb::Error> + From<bincode::Error>,
+    {
+       self.store.each_plate(callback)
+    }
 
-        for id in planet.plate_ids {
-            match self.store.get_plate(&id) {
-                // 1) Found a plate in the DB → push it
-                Ok(Some(plate)) => {
-                    plates.push(plate);
-                }
-                Ok(None) => {
-                    continue;
-                }
-
-                // 3) DB error → propagate
-                Err(e) => return Err(e),
-            }
-        }
+    /**
+    note: this method was formed when there was fewer plates.
+    Going forward avoid using this method 
+    - prefer each_plate as it pulls data one at a time from memory.
+    */
+    pub fn plates(&self) -> Result<Vec<Plate>, String> {
+        let mut plates = Vec::new();
+        self.each_plate::<_, SimManagerError>(|plate, _| {
+            plates.push(plate);
+            Ok(())
+        }).map_err(|e| format!("Failed to iterate plates: {}", e))?;
         Ok(plates)
     }
 
     pub fn make_plates(&self, target_coverage: f64) {
+        // @deprecated - going forward we wil use the asthenosphere to generate plates
         let planet = self.planet().expect("Failed to load planet");
-        assert!(
-            planet.plate_ids.is_empty(),
-            "make_plates expects planet.plate_ids to be empty, but found {} entries: {:?}",
-            planet.plate_ids.len(),
-            planet.plate_ids,
-        );
-        
+
         let mut generator = PlateGenerator::new(
             PartialPlateGenConfig {
                 target_coverage: Some(target_coverage),
@@ -147,7 +173,6 @@ impl SimManager {
         }
         
         let mut planet = self.planet().expect("cannot retrieve planet"); // reloading for integrity
-        planet.plate_ids = plate_ids;
         self.store.put_planet(&planet).expect("Cannot put planet");
     }
 
@@ -155,7 +180,12 @@ impl SimManager {
     pub fn export_data(&self) -> Result<SimExportData, String> {
         let sim = self.sim()?;
         let planet = self.planet()?;
-        let plates = self.plates().map_err(|e| format!("Failed to load plates: {}", e))?;
+        let mut plates = Vec::new();
+
+        self.each_plate::<_, SimManagerError>(|plate, _| {
+            plates.push(plate);
+            Ok(())
+        }).map_err(|e| format!("Failed to iterate plates: {}", e))?;
 
         Ok(SimExportData {
             sim,

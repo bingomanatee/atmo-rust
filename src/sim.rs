@@ -20,7 +20,6 @@ impl SimPlanetParams {
             sim_id,
             radius: self.radius,
             mantle_density_gcm3: self.mantle_density_gcm3,
-            plate_ids: None
         }
     }
 }

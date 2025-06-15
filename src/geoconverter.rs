@@ -2,7 +2,7 @@ use glam::Vec3;
 use h3o::{CellIndex, LatLng, Resolution};
 use rand::Rng;
 use rand::seq::SliceRandom;
-
+// @depercated - plates will be formed from the tectonics sim
 /// Utility to convert between Vec3 and CellIndex for a spherical planet
 pub struct GeoCellConverter {
     pub radius_km: f64,

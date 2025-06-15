@@ -1,10 +1,13 @@
-mod sim;
+pub mod sim;
 mod planet;
 mod plate;
 mod plate_generator;
 mod vary;
 mod rock_store;
 mod helpers;
-mod sim_manager;
+pub mod sim_manager;
 mod h30_utils;
 mod geoconverter;
+mod thermal_plate_generator;
+mod asthenosphere;
+mod asth_sim;

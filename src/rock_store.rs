@@ -1,6 +1,8 @@
 use rocksdb::{DB, Options};
 use uuid::Uuid;
 use bincode;
+use h3o::CellIndex;
+use crate::asthenosphere::AsthenosphereCell;
 use crate::planet::Planet;
 use crate::plate::{Plate};
 use crate::sim::Sim;
@@ -17,6 +19,14 @@ impl RockStore {
         Ok(RockStore { db })
     }
 
+    // Helper to generate keys with prefixes
+    fn key_asth(id: &CellIndex, step: u32) -> Vec<u8> {
+        let mut key = b"asth:".to_vec();
+        key.extend_from_slice(id.to_string().as_bytes());
+        key.extend_from_slice(b":");
+        key.extend_from_slice(step.to_string().as_bytes());
+        key
+    }
     // Helper to generate keys with prefixes
     fn key_sim(id: &Uuid) -> Vec<u8> {
         let mut key = b"sim:".to_vec();
@@ -40,6 +50,24 @@ impl RockStore {
     pub fn put_sim(&self, sim: &Sim) -> Result<(), rocksdb::Error> {
         let key = Self::key_sim(&sim.id);
         let value = bincode::serialize(sim).unwrap();
+        self.db.put(key, value)
+    }
+
+    // Get AsthenosphereCell
+    pub fn get_asth(&self, cell: CellIndex, step: u32) -> Result<Option<AsthenosphereCell>, rocksdb::Error> {
+        let key = Self::key_asth(&cell, step);
+        match self.db.get(key)? {
+            Some(value) => {
+                let a: AsthenosphereCell = bincode::deserialize(&value).unwrap();
+                Ok(Some(a))
+            }
+            None => Ok(None),
+        }
+    }
+    // Save AsthenosphereCell
+    pub fn put_asth(&self, a: &AsthenosphereCell) -> Result<(), rocksdb::Error> {
+        let key = Self::key_asth(&a.cell, a.step);
+        let value = bincode::serialize(a).unwrap();
         self.db.put(key, value)
     }
 
@@ -91,5 +119,24 @@ impl RockStore {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn each_plate<F, E>(&self, mut callback: F) -> Result<(), E>
+    where
+        F: FnMut(Plate, Box<[u8]>) -> Result<(), E>,
+        E: From<rocksdb::Error> + From<bincode::Error>,
+    {
+        let prefix = b"plate:";
+        let iter = self.db.prefix_iterator(prefix);
+
+        for item in iter {
+            let (key, value) = item.map_err(E::from)?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            let plate: Plate = bincode::deserialize(&value).map_err(E::from)?;
+            callback(plate, key)?;
+        }
+        Ok(())
     }
 }
