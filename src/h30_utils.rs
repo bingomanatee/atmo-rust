@@ -116,9 +116,9 @@ mod tests {
         let length = point.length();
 
         // The length should be close to radius_km (allow small floating error)
-        let radius_f32 = radius_km as f32;
+        let radius_f64 = radius_km as f32;
         let epsilon = 1.0; // 1 km tolerance
-        assert!((length - radius_f32).abs() < epsilon, "Point length {} not close to radius {}", length, radius_f32);
+        assert!((length - radius_f64).abs() < epsilon, "Point length {} not close to radius {}", length, radius_f64);
     }
 
     #[test]
@@ -141,9 +141,9 @@ mod tests {
         for _ in 0..10 {
             let point = sampler.random_point_on_planet();
             let length = point.length();
-            let radius_f32 = radius_km as f32;
+            let radius_f64 = radius_km as f32;
             let epsilon = 1.0;
-            assert!((length - radius_f32).abs() < epsilon, "Point length {} not close to radius {}", length, radius_f32);
+            assert!((length - radius_f64).abs() < epsilon, "Point length {} not close to radius {}", length, radius_f64);
         }
     }
 
@@ -183,7 +183,7 @@ mod tests {
 
         let variance = closest_distances.iter()
             .map(|d| {
-                let diff = d - avg_distance;
+                let diff = d - avg_distance as f32;
                 diff * diff
             })
             .sum::<f32>() / closest_distances.len() as f32;

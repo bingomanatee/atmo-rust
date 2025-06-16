@@ -5,15 +5,20 @@ use glam::Vec3;
 use h3o::{CellIndex, Resolution};
 use noise::{NoiseFn, Perlin};
 use serde::{Deserialize, Serialize};
+use crate::asth_constants::{AVG_STARTING_VOLUME, K_PER_VOLUME, MAX_SUNK_PERCENT, MAX_SUNK_TEMP, MIN_SUNK_TEMP};
 
-#[derive(Serialize, Deserialize, Clone)]
+/**
+some assumptions: the meaningfful volume of the aesthenosphere we track is a 10km
+at l2, the area is 426 km^2, the volume of the average cell is 4260 km^3
+*/
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct AsthenosphereCell {
     pub cell: CellIndex,
     pub location: Vec3,
     pub neighbors: Vec<CellIndex>,
     pub step: u32,
-    pub volume: f32,   // c. 2 MIO KM3 per
-    pub energy_k: u32, // Temp in kelvin; each unit of volume adds 2073, cools by 20 per MIO years
+    pub volume: f64,   // c. 2 MIO KM3 per
+    pub energy_k: f64, // Temp in kelvin; each unit of volume adds 2073, cools by 20 per MIO years
 }
 
 pub const ASTH_RES: Resolution = Resolution::Two;
@@ -21,11 +26,20 @@ pub const ASTH_RES: Resolution = Resolution::Two;
 #[derive(Clone)]
 pub struct CellsForPlanetArgs<F>
 where
-    F: FnMut(AsthenosphereCell),
+    F: FnMut(AsthenosphereCell) -> AsthenosphereCell,
 {
     pub planet: Planet,
     pub on_cell: F,
     pub res: Option<Resolution>,
+    pub energy_per_volume: f64,
+}
+
+#[derive(Clone)]
+struct AsthenosphereCellParams {
+    cell: CellIndex,
+    location: Vec3,
+    volume_kg_3: f64,
+    energy_per_volume: f64,
 }
 
 impl AsthenosphereCell {
@@ -36,48 +50,58 @@ impl AsthenosphereCell {
     */
     pub fn cells_for_planet<F>(args: CellsForPlanetArgs<F>)
     where
-        F: FnMut(AsthenosphereCell),
+        F: FnMut(AsthenosphereCell) -> AsthenosphereCell,
     {
         let CellsForPlanetArgs {
             planet,
             mut on_cell,
             res,
+            energy_per_volume,
         } = args;
         let resolution = res.unwrap_or(ASTH_RES);
         let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
         let per = Perlin::new(100);
+        let mut index = 0u32;
         H3Utils::iter_at(ASTH_RES, |l2_cell| {
             let location = gc.cell_to_vec3(l2_cell);
             let [x, y, z] = location.normalize().to_array();
             let noise_val = per.get([x as f64, y as f64, z as f64]);
-            on_cell(AsthenosphereCell::at_cell(
-                l2_cell,
+            let random_scale = 1.0 +  (noise_val  / 4.0); // 0.5...1.5
+            let count = AVG_STARTING_VOLUME * random_scale as f64;
+            let asth_cell = AsthenosphereCell::at_cell(AsthenosphereCellParams {
+                cell: l2_cell,
                 location,
-                (10.0 + (noise_val * 10.0)) as f32,
-            ));
+                volume_kg_3: count,
+                energy_per_volume,
+            });
+
+            on_cell(asth_cell);
+            index += 1;
         });
     }
 
-    pub fn sunk_volume(&self) -> f32 {
-        if self.energy_k as f32 >= MAX_SUNK_TEMP {
+    pub fn sunk_volume(&self) -> f64 {
+        if self.energy_k as f64 >= MAX_SUNK_TEMP {
             return 0.0;
         }
-        let effective_energy: f32 = (self.energy_k as f32).max(MIN_SUNK_TEMP);
-        let percent = MAX_SUNK_PERCENT * effective_energy / MAX_SUNK_TEMP;
+        let effective_energy: f64 = (self.energy_k as f64).max(MIN_SUNK_TEMP);
+        let percent = MAX_SUNK_PERCENT * effective_energy / (MAX_SUNK_TEMP / MIN_SUNK_TEMP);
         self.volume * percent
     }
 
-    pub fn at_cell(cell: CellIndex, location: Vec3, count: f32) -> AsthenosphereCell {
+    pub fn at_cell(params: AsthenosphereCellParams) -> AsthenosphereCell {
         AsthenosphereCell {
-            cell,
-            volume: count,
-            energy_k: (16000.0 * count as f32) as u32,
-            location,
+            cell: params.cell,
+            volume: params.volume_kg_3,
+            energy_k: K_PER_VOLUME * params.volume_kg_3, // average starting cound is 10
+            // avg starting energy is 2000K
+            location: params.location,
             step: 0,
-            neighbors: cell
+            neighbors: params
+                .cell
                 .grid_disk::<Vec<_>>(1)
                 .into_iter()
-                .filter(|&c| c != cell)
+                .filter(|&c| c != params.cell)
                 .collect::<Vec<CellIndex>>(),
         }
     }
@@ -88,6 +112,7 @@ mod tests {
     use super::*;
     use crate::planet::EARTH;
     use h3o::Resolution;
+    use crate::asth_constants::CELL_ENERGY_START;
 
     #[test]
     fn test_asthenosphere_cell_init() {
@@ -98,18 +123,20 @@ mod tests {
 
         AsthenosphereCell::cells_for_planet(CellsForPlanetArgs {
             planet: planet.clone(),
-            on_cell: |cell| {
+            energy_per_volume: 200.0, // average cell starts with
+            on_cell: |asth_cell| {
                 // Assertions inside the callback
-            assert_eq!(cell.cell.resolution(), Resolution::Two);
-            assert!(!cell.neighbors.is_empty(), "Cell has no neighbors");
-            assert!(
-                !cell.neighbors.contains(&cell.cell),
-                "Cell neighbors include itself"
-            );
-            assert!(cell.volume > 0.0, "Cell volume should be positive");
-            assert!(cell.energy_k > 10000);
+                assert_eq!(asth_cell.cell.resolution(), Resolution::Two);
+                assert!(!asth_cell.neighbors.is_empty(), "Cell has no neighbors");
+                assert!(
+                    !asth_cell.neighbors.contains(&asth_cell.cell),
+                    "Cell neighbors include itself"
+                );
+                assert!(asth_cell.volume > 0.0, "Cell volume should be positive");
+                assert!(asth_cell.energy_k > CELL_ENERGY_START/2.0);
 
                 cell_count += 1;
+                return asth_cell
             },
             res: None,
         });
@@ -118,6 +145,4 @@ mod tests {
     }
 }
 
-const MAX_SUNK_PERCENT: f32 = 0.15;
-const MAX_SUNK_TEMP: f32 = 2000.0;
-const MIN_SUNK_TEMP: f32 = 1000.0;
+// see notes in asthenosphere.rs

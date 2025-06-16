@@ -1,4 +1,4 @@
-use rocksdb::{DB, Options};
+use rocksdb::{DB, Options, WriteBatch};
 use uuid::Uuid;
 use bincode;
 use h3o::CellIndex;
@@ -138,5 +138,17 @@ impl RockStore {
             callback(plate, key)?;
         }
         Ok(())
+    }
+
+    pub fn put_asth_batch(&self, cells: &[AsthenosphereCell]) {
+        
+      let mut batch = WriteBatch::default();
+        for cell in cells {
+            let key = RockStore::key_asth(&cell.cell, cell.step);
+           let value = bincode::serialize(cell).expect("serialize failed");
+           // self.put_asth( &cell).unwrap();
+            batch.put(key, value);
+        }
+        self.db.write(batch);
     }
 }
