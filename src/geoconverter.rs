@@ -17,8 +17,8 @@ impl GeoCellConverter {
         }
     }
 
-    fn cell_radius_km(&self) -> f32 {
-        let edge_len = self.resolution.edge_length_km() as f32;
+    fn cell_radius_km(&self) -> f64 {
+        let edge_len = self.resolution.edge_length_km() as f64;
         edge_len * 1.1547
     }
 
@@ -26,9 +26,9 @@ impl GeoCellConverter {
         let mut rng = rand::rng();
         let max_jitter = self.cell_radius_km();
         let jitter = Vec3::new(
-            rng.random_range(-max_jitter..max_jitter),
-            rng.random_range(-max_jitter..max_jitter),
-            rng.random_range(-max_jitter..max_jitter),
+            rng.random_range(-max_jitter..max_jitter) as f32,
+            rng.random_range(-max_jitter..max_jitter) as f32,
+            rng.random_range(-max_jitter..max_jitter) as f32,
         );
 
         (base + jitter).normalize() * (self.radius_km as f32)

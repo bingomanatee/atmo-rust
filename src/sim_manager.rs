@@ -1,15 +1,15 @@
+use crate::planet::{Planet, PlanetParams};
+use crate::plate::Plate;
+use crate::plate_generator::{GenerateRadiiParams, PartialPlateGenConfig, PlateGenerator};
+use crate::rock_store::RockStore;
+use crate::sim::{Sim, SimPlanetParams};
+use rocksdb::LogLevel::Error;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use rocksdb::LogLevel::Error;
-use crate::planet::{Planet, PlanetParams};
-use crate::rock_store::RockStore;
-use crate::sim::{Sim, SimPlanetParams};
 use uuid::Uuid;
-use crate::plate::Plate;
-use crate::plate_generator::{GenerateRadiiParams, PartialPlateGenConfig, PlateGenerator};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum SimManagerError {
@@ -123,12 +123,12 @@ impl SimManager {
         F: FnMut(Plate, Box<[u8]>) -> Result<(), E>,
         E: From<rocksdb::Error> + From<bincode::Error>,
     {
-       self.store.each_plate(callback)
+        self.store.each_plate(callback)
     }
 
     /**
     note: this method was formed when there was fewer plates.
-    Going forward avoid using this method 
+    Going forward avoid using this method
     - prefer each_plate as it pulls data one at a time from memory.
     */
     pub fn plates(&self) -> Result<Vec<Plate>, String> {
@@ -136,7 +136,8 @@ impl SimManager {
         self.each_plate::<_, SimManagerError>(|plate, _| {
             plates.push(plate);
             Ok(())
-        }).map_err(|e| format!("Failed to iterate plates: {}", e))?;
+        })
+        .map_err(|e| format!("Failed to iterate plates: {}", e))?;
         Ok(plates)
     }
 
@@ -157,21 +158,21 @@ impl SimManager {
             },
             &planet,
         );
-        let radii = generator.generate_radii( GenerateRadiiParams {
-            target_coverage: target_coverage as f32,
-            min_radius: (planet.radius_km / 20) ,
-            max_radius: (planet.radius_km as f32 * 0.8) as i32,
+        let radii = generator.generate_radii(GenerateRadiiParams {
+            target_coverage: target_coverage as f64,
+            min_radius: (planet.radius_km / 20),
+            max_radius: (planet.radius_km as f64 * 0.8) as i32,
             exponent: 0.3,
         });
 
-
         let mut plate_ids: HashSet<Uuid> = HashSet::new();
-        for radius in &radii { // @TODO: put in a different index
+        for radius in &radii {
+            // @TODO: put in a different index
             let plate = generator.generate_one(*radius, planet.id);
             let _ = self.store.put_plate(&plate);
             plate_ids.insert(plate.id);
         }
-        
+
         let mut planet = self.planet().expect("cannot retrieve planet"); // reloading for integrity
         self.store.put_planet(&planet).expect("Cannot put planet");
     }
@@ -182,10 +183,15 @@ impl SimManager {
         let planet = self.planet()?;
         let mut plates = Vec::new();
 
+        /**
+                note - this system now writes all plates for all _STEPS_ in a single collection
+                there may be a LOT More data than is expected in this loop!
+        */
         self.each_plate::<_, SimManagerError>(|plate, _| {
             plates.push(plate);
             Ok(())
-        }).map_err(|e| format!("Failed to iterate plates: {}", e))?;
+        })
+        .map_err(|e| format!("Failed to iterate plates: {}", e))?;
 
         Ok(SimExportData {
             sim,
@@ -200,8 +206,7 @@ impl SimManager {
         let json_string = serde_json::to_string_pretty(&export_data)
             .map_err(|e| format!("Failed to serialize to JSON: {}", e))?;
 
-        let mut file = File::create(path)
-            .map_err(|e| format!("Failed to create file: {}", e))?;
+        let mut file = File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
 
         file.write_all(json_string.as_bytes())
             .map_err(|e| format!("Failed to write to file: {}", e))?;
@@ -212,7 +217,7 @@ impl SimManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::sim::{SimPlanetParams};
+    use crate::sim::SimPlanetParams;
     use crate::sim_manager::{SimManager, SimManagerParams};
     use tempfile::tempdir;
 
@@ -314,8 +319,7 @@ mod tests {
         let planet_id = planet.id;
 
         // Retrieve plates from the store for this planet
-        let plates = manager.plates()
-            .expect("Failed to get plates for planet");
+        let plates = manager.plates().expect("Failed to get plates for planet");
 
         // Assert that some plates were created and stored
         assert!(!plates.is_empty(), "No plates were created");
@@ -339,7 +343,14 @@ mod tests {
         };
         let manager = SimManager::new(params);
 
-        let output_path = dir.path().join("sim_data.json").to_str().unwrap().to_string();
-        manager.save_to_json(&output_path).expect("Failed to save sim data");
+        let output_path = dir
+            .path()
+            .join("sim_data.json")
+            .to_str()
+            .unwrap()
+            .to_string();
+        manager
+            .save_to_json(&output_path)
+            .expect("Failed to save sim data");
     }
 }

@@ -47,8 +47,8 @@ impl Planet {
     }
 
     /// Returns the surface area of the planet in square kilometers.
-    pub fn surface_area_km2(&self) -> f32 {
-        (4.0 * std::f64::consts::PI * (self.radius_km as f32).powi(2) as f64 )as f32
+    pub fn surface_area_km2(&self) -> f64 {
+        (4.0 * std::f64::consts::PI * (self.radius_km as f64).powi(2) as f64 )as f64
     }
 }
 

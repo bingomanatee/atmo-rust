@@ -12,3 +12,4 @@ mod thermal_plate_generator;
 mod asthenosphere;
 mod asth_sim;
 mod asth_process_cell;
+mod asth_constants;

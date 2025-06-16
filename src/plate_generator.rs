@@ -53,7 +53,7 @@ impl PlateGeneratorConfig {
 }
 
 pub struct GenerateRadiiParams {
-    pub target_coverage: f32,
+    pub target_coverage: f64,
     pub min_radius: i32,
     pub max_radius: i32,
     pub exponent: f64,
@@ -73,7 +73,7 @@ impl<'a> PlateGenerator<'a>  {
         let point_sampler = PointSampler::new(planet.radius_km);
         Self { config, planet, point_sampler }
     }
-    pub fn surface_area_km2(&self) -> f32 {
+    pub fn surface_area_km2(&self) -> f64 {
         self.planet.surface_area_km2()
     }
 
@@ -104,9 +104,9 @@ impl<'a> PlateGenerator<'a>  {
         let min_density = base_density * (1.0 - t_variation);
         let density = vary_within_range(min_density, max_density, self.config.variation_factor)
             .clamp(self.config.min_density, self.config.max_density);
-        
-        
-        
+
+
+
         Plate::new(
             PlateParams {
                 center,
@@ -116,7 +116,7 @@ impl<'a> PlateGenerator<'a>  {
                 planet_id,
                 planet_radius_km: self.planet.radius_km
             }
-        ) 
+        )
     }
 
     // Convert max_plate_radius (radians) to kilometers on the planet surface
@@ -224,12 +224,12 @@ fn total_area(radii: &Vec<i32>) -> i32 {
     radii.iter().map(|&r| rad_to_area_int(r)).sum()
 }
 
-fn area_status(radii: &Vec<i32>, planet: &Planet, target_coverage: f32) -> AreaStatus {
+fn area_status(radii: &Vec<i32>, planet: &Planet, target_coverage: f64) -> AreaStatus {
     let planet_surface = planet.surface_area_km2();
     let target_area = (planet_surface * target_coverage) as i32;
 
     let actual_area = total_area(radii);
-    let actual_coverage = actual_area as f32 / planet_surface;
+    let actual_coverage = actual_area as f64 / planet_surface;
     /*    println!(
         "TARGET: coverage {}, area: {} \n ACTUAL: coverage: {}, area: {}\nOVERAGE: area {}, ratio {}",
         target_coverage,
@@ -237,7 +237,7 @@ fn area_status(radii: &Vec<i32>, planet: &Planet, target_coverage: f32) -> AreaS
         actual_coverage,
         actual_area,
         actual_area - target_area,
-        actual_area as f32 / target_area as f32
+        actual_area as f64 / target_area as f64
     );*/
 
     AreaStatus {
@@ -251,12 +251,12 @@ fn area_status(radii: &Vec<i32>, planet: &Planet, target_coverage: f32) -> AreaS
     }
 }
 struct AreaStatus {
-    planet_surface: f32,
+    planet_surface: f64,
 
-    target_coverage: f32,
+    target_coverage: f64,
     target_area: i32,
 
-    actual_coverage: f32,
+    actual_coverage: f64,
     actual_area: i32,
 }
 
@@ -368,6 +368,6 @@ mod tests {
 
         println!("total_area: {}, target_area: {}", total, target_area);
         assert!(total >= target_area);
-        assert!(total as f32 <= target_area as f32 * 1.5);
+        assert!(total as f64 <= target_area as f64 * 1.5);
     }
 }

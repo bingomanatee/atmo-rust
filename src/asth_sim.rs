@@ -1,11 +1,12 @@
-use rayon::prelude::*;
-use crate::asth_process_cell::{process_cell, ProcessResult};
+use crate::asth_process_cell::{ProcessResult, process_cell};
 use crate::asthenosphere::{ASTH_RES, AsthenosphereCell, CellsForPlanetArgs};
 use crate::h30_utils::H3Utils;
 use crate::planet::Planet;
 use crate::rock_store::RockStore;
-use h3o::CellIndex;
+use h3o::{CellIndex, Resolution};
 use rand::Rng;
+use rayon::prelude::*;
+use std::collections::HashMap;
 
 pub struct AsthSim<'a> {
     store: RockStore,
@@ -21,10 +22,11 @@ pub struct AsthSimArgs<'a> {
 }
 
 pub struct VolumeStats {
-    pub volume_added: f32,
-    pub volume_removed: f32,
-    pub total_volume: f32,
-    pub mean_energy: f32,
+    pub volume_added: f64,
+    pub volume_removed: f64,
+    pub total_volume: f64,
+    pub mean_energy: f64,
+    pub mean_volume: f64,
 }
 
 impl<'a> AsthSim<'a> {
@@ -41,8 +43,18 @@ impl<'a> AsthSim<'a> {
         AsthenosphereCell::cells_for_planet(CellsForPlanetArgs {
             planet: planet.clone(),
             res: Some(ASTH_RES),
-            on_cell: |cell: AsthenosphereCell| {
-                store.put_asth(&cell);
+            energy_per_volume: 200.0,
+            on_cell: |asth_cell: AsthenosphereCell| {
+                match store.put_asth(&asth_cell) {
+                    Ok(_) => {
+                        // Successfully stored
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to store cell {:?}: {:?}", asth_cell.cell, e);
+                        // Optionally handle error, e.g., panic!("DB write failed");
+                    }
+                }
+                asth_cell
             },
         });
 
@@ -56,17 +68,22 @@ impl<'a> AsthSim<'a> {
     pub fn run(&self) {
         // Print table header
         println!(
-            "{:<6} | {:<13} | {:<14} | {:<13} | {:<11}",
-            "Step", "Volume Added", "Volume Removed", "Total Volume", "Mean Energy/cell"
+            "{:<6} | {:<13} | {:<14} | {:<13} | {:<11} | {:<11}",
+            "Step", "Volume Added", "Volume Removed", "Total Volume", "Mean Energy", "Mean_volume"
         );
         println!("{}", "-".repeat(65));
 
         for current in 1..=self.mio_years {
             let stats = self.advance(current);
-            if (current % 5) == 0 {
+            if current < 10 || (current % 10) == 0 {
                 println!(
-                    "{:<6} | {:<13.2} | {:<14.2} | {:<13.2} | {:<11.2}",
-                    current, stats.volume_added, stats.volume_removed, stats.total_volume, stats.mean_energy
+                    "{:<6} | {:<13.2} | {:<14.2} | {:<13.2} | {:<11.2}, {:<11.2}",
+                    current,
+                    stats.volume_added,
+                    stats.volume_removed,
+                    stats.total_volume,
+                    stats.mean_energy,
+                    stats.mean_volume
                 );
             }
         }
@@ -81,41 +98,55 @@ impl<'a> AsthSim<'a> {
         };
 
         // Process cells in parallel using Rayon
-        let results: Vec<ProcessResult> = cells
+        let results: Result<Vec<ProcessResult>, String> = cells
             .par_iter()
-            .filter_map(|l2_cell| process_cell(&self.store, *l2_cell, to_mio_years, self.mio_years).ok())
+            .map(|l2_cell| process_cell(&self.store, *l2_cell, to_mio_years, self.mio_years))
             .collect();
-        
-        let volume_added = results.iter().map(|r| r.volume_added).sum();
-        let volume_removed = results.iter().map(|r| r.volume_removed).sum();
-        let total_volume = results.iter().map(|r| r.new_volume).sum();
-        let total_energy: f32 = results.iter().map(|r| r.total_energy).sum();
-        let cell_count = results.len() as f32;
 
-        let mean_energy = if cell_count > 0.0 {
-            total_energy / cell_count
-        } else {
-            0.0
-                    };
+        let results = match results {
+            Ok(res) => res,
+            Err(e) => panic!("Error processing cell: {}", e),
+        };
+
+        let mut volume_added = 0.0f64;
+        let mut volume_removed = 0.0f64;
+        let mut total_volume = 0.0f64;
+        let mut total_energy = 0.0f64;
+
+        let mut updated_cells = Vec::with_capacity(results.len());
+    
+        for r in &results {
+            volume_added += r.volume_added;
+            volume_removed += r.volume_removed;
+            total_volume += r.new_volume;
+            total_energy += r.energy_k;
+            
+            updated_cells.push(r.cell.clone());
+        }
+
+        // Batch write all updated cells at once
+        self.store.put_asth_batch(&updated_cells);
+
+        let cell_count = results.len() as f64;
 
         VolumeStats {
             volume_added,
-            volume_removed,
-            total_volume,
-            mean_energy,
+            volume_removed: volume_removed,
+            total_volume: total_volume,
+            mean_energy: if cell_count > 0.0 {
+                total_energy / cell_count
+            } else {
+                0.0
+            },
+            mean_volume: total_volume as f64 / cell_count,
         }
     }
 }
 
-pub const AVERAGE_ENERGY_AT_START: f32 = 2.0;
-pub const AVERAGE_ENERGY_AT_END: f32 = 0.5;
-
-pub const AE_SPAN: f32 = AVERAGE_ENERGY_AT_START - AVERAGE_ENERGY_AT_END;
-pub const K_PER_VOLUME: f32 = 1000.0;
-pub const COOLING_RATE: f32 = 0.95;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asth_constants::STANDARD_STEPS;
     use crate::planet::{EARTH_RADIUS_KM, PlanetParams, RHO_EARTH};
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -139,7 +170,7 @@ mod tests {
         let db_path = temp_dir.path().to_str().unwrap().to_string();
 
         let planet = create_test_planet();
-        let mio_years = 500;
+        let mio_years = STANDARD_STEPS;
         let resolution = ASTH_RES;
 
         // Create the simulation
@@ -153,25 +184,27 @@ mod tests {
         // Run the simulation for all steps
         sim.run();
 
-        // For each step, collect all cells and compute mean energy
-        for step in 1..mio_years {
-            let mut total_energy = 0.0f32;
-            let mut cell_count = 0usize;
+        let mut energy_sums: HashMap<u32, f32> = HashMap::new();
+        let mut counts: HashMap<u32, usize> = HashMap::new();
 
-            H3Utils::iter_at(ASTH_RES, |l2_cell| {
+        H3Utils::iter_at(ASTH_RES, |l2_cell| {
+            for step in 1..mio_years {
                 if let Ok(Some(cell)) = sim.store.get_asth(l2_cell, step) {
-                    total_energy += cell.energy_k as f32;
-                    cell_count += 1;
+                    *energy_sums.entry(step).or_insert(0.0) += cell.energy_k as f32;
+                    *counts.entry(step).or_insert(0) += 1;
                 }
-            });
+            }
+        });
 
+        // Now compute mean energy per step and print
+        for step in 1..mio_years {
+            let total_energy = energy_sums.get(&step).copied().unwrap_or(0.0);
+            let cell_count = counts.get(&step).copied().unwrap_or(0);
             let mean_energy = if cell_count == 0 {
                 0.0
             } else {
                 total_energy / cell_count as f32
             };
-
-          // println!("Step {}: mean energy = {:.2}", step, mean_energy);
         }
     }
 }

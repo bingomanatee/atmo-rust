@@ -60,7 +60,7 @@ fn main() {
                 .map(|plate| std::f32::consts::PI * (plate.radius_km as f32).powi(2))
                 .sum();
             let planet_surface_area = export_data.planet.surface_area_km2();
-            let coverage = (total_area / planet_surface_area) * 100.0;
+            let coverage = (total_area / planet_surface_area as f32) * 100.0;
             println!("  - Plate coverage: {:.1}%", coverage);
         }
         Err(e) => {
