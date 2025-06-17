@@ -1,14 +1,15 @@
-use rocksdb::{DB, Options, WriteBatch};
-use uuid::Uuid;
-use bincode;
-use h3o::CellIndex;
+use crate::asth_sim::VolumeEnergyTransfer;
 use crate::asthenosphere::AsthenosphereCell;
 use crate::planet::Planet;
-use crate::plate::{Plate};
+use crate::plate::Plate;
 use crate::sim::Sim;
+use bincode;
+use h3o::CellIndex;
+use rayon::prelude::*;
 use rocksdb::Error as RocksDbError;
-use crate::asth_sim::VolumeEnergyTransfer;
-
+use rocksdb::{DB, Options, WriteBatch};
+use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 pub struct RockStore {
     db: DB,
@@ -64,7 +65,11 @@ impl RockStore {
     }
 
     // Get AsthenosphereCell
-    pub fn get_asth(&self, cell: CellIndex, step: u32) -> Result<Option<AsthenosphereCell>, rocksdb::Error> {
+    pub fn get_asth(
+        &self,
+        cell: CellIndex,
+        step: u32,
+    ) -> Result<Option<AsthenosphereCell>, rocksdb::Error> {
         let key = Self::key_asth(&cell, step);
         match self.db.get(key)? {
             Some(value) => {
@@ -151,11 +156,10 @@ impl RockStore {
     }
 
     pub fn put_asth_batch(&self, cells: &[AsthenosphereCell]) {
-        
-      let mut batch = WriteBatch::default();
+        let mut batch = WriteBatch::default();
         for cell in cells {
             let key = RockStore::key_asth(&cell.cell, cell.step);
-           let value = bincode::serialize(cell).expect("serialize failed");
+            let value = bincode::serialize(cell).expect("serialize failed");
             batch.put(key, value);
         }
         self.db.write(batch);
@@ -196,10 +200,7 @@ impl RockStore {
     }
 
     /// Process all volume transfers for a given step using parallel processing
-    pub(crate) fn transfer_volume(&self, step: u32) {
-        use rayon::prelude::*;
-        use std::collections::HashMap;
-
+    pub fn transfer_volume(&self, step: u32) {
         // Collect all transfers for this step
         let mut transfers = Vec::new();
         let mut transfer_keys = Vec::new();
@@ -215,43 +216,26 @@ impl RockStore {
         }
 
         // Group transfers by both source and target cells to aggregate changes
-        let mut source_changes: HashMap<h3o::CellIndex, (f64, f64)> = HashMap::new(); // (volume_delta, energy_delta)
-        let mut target_changes: HashMap<h3o::CellIndex, (f64, f64)> = HashMap::new();
+        let mut changes: HashMap<CellIndex, (f64, f64)> = HashMap::new(); // (volume_delta, energy_delta)
 
         for transfer in &transfers {
-            // Accumulate negative changes for source cells
-            let source_entry = source_changes.entry(transfer.from_cell).or_insert((0.0, 0.0));
+            let source_entry = changes.entry(transfer.from_cell).or_insert((0.0, 0.0));
             source_entry.0 -= transfer.volume;
             source_entry.1 -= transfer.energy;
 
-            // Accumulate positive changes for target cells
-            let target_entry = target_changes.entry(transfer.to_cell).or_insert((0.0, 0.0));
+            let target_entry = changes.entry(transfer.to_cell).or_insert((0.0, 0.0));
             target_entry.0 += transfer.volume;
             target_entry.1 += transfer.energy;
         }
 
-        // Collect all unique cells that need to be updated
-        let mut all_cells_to_update: std::collections::HashSet<h3o::CellIndex> = std::collections::HashSet::new();
-        all_cells_to_update.extend(source_changes.keys());
-        all_cells_to_update.extend(target_changes.keys());
-
         // Process all affected cells in parallel
-        let updated_cells: Vec<AsthenosphereCell> = all_cells_to_update
+        let updated_cells: Vec<AsthenosphereCell> = changes
             .par_iter()
-            .filter_map(|&cell_index| {
+            .filter_map(|(&cell_index, change)| {
                 if let Ok(Some(mut cell)) = self.get_asth(cell_index, step) {
-                    // Apply source changes (subtractions)
-                    if let Some((vol_delta, energy_delta)) = source_changes.get(&cell_index) {
-                        cell.volume += vol_delta; // vol_delta is negative for sources
-                        cell.energy_k += energy_delta; // energy_delta is negative for sources
-                    }
-
-                    // Apply target changes (additions)
-                    if let Some((vol_delta, energy_delta)) = target_changes.get(&cell_index) {
-                        cell.volume += vol_delta; // vol_delta is positive for targets
-                        cell.energy_k += energy_delta; // energy_delta is positive for targets
-                    }
-
+                    let (vol, energy) = change;
+                    cell.volume += vol; 
+                    cell.energy_k += energy; 
                     Some(cell)
                 } else {
                     None
@@ -269,7 +253,7 @@ impl RockStore {
         for key in transfer_keys {
             batch.delete(key);
         }
-        let _ = self.db.write(batch);
+        self.db.write(batch);
     }
 
     /// Store a single VolumeEnergyTransfer record in RocksDB.
@@ -334,14 +318,22 @@ mod tests {
         };
 
         // Store the transfer
-        store.put_transfer(&transfer).expect("failed to store transfer");
+        store
+            .put_transfer(&transfer)
+            .expect("failed to store transfer");
 
         // Execute transfer_volume
         store.transfer_volume(step);
 
         // Verify the results
-        let updated_cell1 = store.get_asth(cell1, step).expect("failed to get cell1").expect("cell1 not found");
-        let updated_cell2 = store.get_asth(cell2, step).expect("failed to get cell2").expect("cell2 not found");
+        let updated_cell1 = store
+            .get_asth(cell1, step)
+            .expect("failed to get cell1")
+            .expect("cell1 not found");
+        let updated_cell2 = store
+            .get_asth(cell2, step)
+            .expect("failed to get cell2")
+            .expect("cell2 not found");
 
         // Cell1 should have lost volume and energy
         assert_eq!(updated_cell1.volume, 900.0); // 1000.0 - 100.0

@@ -1,5 +1,5 @@
 use crate::geoconverter::GeoCellConverter;
-use crate::h30_utils::H3Utils;
+use crate::h3o_utils::H3Utils;
 use crate::planet::Planet;
 use glam::Vec3;
 use h3o::{CellIndex, Resolution};
@@ -60,7 +60,7 @@ impl AsthenosphereCell {
         given a planet and resolution and feed it back to the callback;
         it is a utility for asth_sim.
     */
-    pub fn cells_for_planet<F>(args: CellsForPlanetArgs<F>)
+    pub fn initial_cells_for_planet<F>(args: CellsForPlanetArgs<F>)
     where
         F: FnMut(AsthenosphereCell) -> AsthenosphereCell,
     {
@@ -153,7 +153,7 @@ mod tests {
 
         let mut cell_count = 0;
 
-        AsthenosphereCell::cells_for_planet(CellsForPlanetArgs {
+        AsthenosphereCell::initial_cells_for_planet(CellsForPlanetArgs {
             planet: planet.clone(),
             energy_per_volume: 200.0, // average cell starts with
             on_cell: |asth_cell| {

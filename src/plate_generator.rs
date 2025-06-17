@@ -8,7 +8,7 @@ use rand::Rng;
 use std::f64::consts::FRAC_PI_6;
 use uuid::Uuid;
 use crate::geoconverter::GeoCellConverter;
-use crate::h30_utils::PointSampler;
+use crate::h3o_utils::PointSampler;
 
 pub struct PlateGeneratorConfig {
     pub target_coverage: f64,
