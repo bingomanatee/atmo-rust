@@ -169,10 +169,13 @@ impl<'a> AsthSim<'a> {
 
     /// Main leveling function that processes all cells at PLATE_RESOLUTION for the given step.
     fn level(&self, current_step: u32) {
-        CellIndex::base_cells
+       let base_cells: Vec<CellIndex> = CellIndex::base_cells()
+           .collect();
+        
+        base_cells
             .par_iter()
-            .map(|base_cell| level_cells(*base_cell, &self.store, self.resolution))
-            .colllect();
+            .map(|base_cell| level_cells(*base_cell, &self.store, current_step, self.resolution))
+            .collect();
     }
 
     /// Returns a vector of neighbors with volume less than the root cell's volume.
@@ -270,55 +273,75 @@ impl<'a> AsthSim<'a> {
 
             if let Ok(Some(mut cell)) = self.store.get_asth(cell_index, previous_step) {
                 // Generate random number from 1 to 20
-                let random_action = rng.random_range(1..=40);
-                let old_volume = cell.volume;
-                let old_energy = cell.energy_k;
-                let small_amount = AVG_STARTING_VOLUME / 400.0;
-                let large_amount = AVG_STARTING_VOLUME / 100.0;
+                let random_action = rng.random_range(1..=20);
 
                 match random_action {
                     1 => {
-                        let new_volume = old_volume + small_amount;
-                        let new_energy = AsthSim::add_energy(old_volume, old_energy,  small_amount);
+                        // Add small amount of material (1/400 of AVG_STARTING_VOLUME)
+                        let volume_to_add = AVG_STARTING_VOLUME / 400.0;
+                        let old_volume = cell.volume;
+                        let new_volume = old_volume + volume_to_add;
+
+                        // Calculate weighted average energy
+                        let old_energy = cell.energy_k;
+                        let added_energy = volume_to_add * (CELL_ENERGY_START / AVG_STARTING_VOLUME);
+                        let new_energy = (old_energy * old_volume + added_energy * volume_to_add) / new_volume;
 
                         cell.volume = new_volume;
                         cell.energy_k = new_energy;
+                        cell.step = current_step;
                         updated_cells.push(cell);
-                    }
+                    },
                     2 => {
-                        let new_volume = old_volume + large_amount;
-                        let new_energy = AsthSim::add_energy(old_volume, old_energy, large_amount);
+                        // Add large amount of material (1/100 of AVG_STARTING_VOLUME)
+                        let volume_to_add = AVG_STARTING_VOLUME / 100.0;
+                        let old_volume = cell.volume;
+                        let new_volume = old_volume + volume_to_add;
+
+                        // Calculate weighted average energy
+                        let old_energy = cell.energy_k;
+                        let added_energy = volume_to_add * (CELL_ENERGY_START / AVG_STARTING_VOLUME);
+                        let new_energy = (old_energy * old_volume + added_energy * volume_to_add) / new_volume;
 
                         cell.volume = new_volume;
                         cell.energy_k = new_energy;
+                        cell.step = current_step;
                         updated_cells.push(cell);
-                    }
-                    3 => {
-                        if cell.volume > small_amount {
-                            let new_volume = old_volume - small_amount;
-
-                            cell.energy_k *= new_volume / old_volume;
-                            cell.volume = new_volume;
-                            updated_cells.push(cell);
-                        }
-                    }
-                    4 => {
-                        if cell.volume > large_amount {
+                    },
+                    19 => {
+                        // Remove small amount of material (1/400 of AVG_STARTING_VOLUME)
+                        let volume_to_remove = AVG_STARTING_VOLUME / 400.0;
+                        if cell.volume > volume_to_remove {
                             let old_volume = cell.volume;
-                            let new_volume = old_volume - large_amount;
+                            let new_volume = old_volume - volume_to_remove;
 
+                            // Scale energy proportionally
                             cell.energy_k *= new_volume / old_volume;
                             cell.volume = new_volume;
+                            cell.step = current_step;
                             updated_cells.push(cell);
                         }
-                    }
+                    },
+                    20 => {
+                        // Remove large amount of material (1/100 of AVG_STARTING_VOLUME)
+                        let volume_to_remove = AVG_STARTING_VOLUME / 100.0;
+                        if cell.volume > volume_to_remove {
+                            let old_volume = cell.volume;
+                            let new_volume = old_volume - volume_to_remove;
+
+                            // Scale energy proportionally
+                            cell.energy_k *= new_volume / old_volume;
+                            cell.volume = new_volume;
+                            cell.step = current_step;
+                            updated_cells.push(cell);
+                        }
+                    },
                     _ => {
-                        // No change for higher numbers)
+                        // No change for numbers 3-18 (16 out of 20 cases = 80% no change)
+                        cell.step = current_step;
+                        updated_cells.push(cell);
                     }
                 }
-
-                // Update the step to current_step so it gets stored correctly
-                cell.step = current_step;
             }
         }
 
