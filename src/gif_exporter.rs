@@ -64,7 +64,7 @@ impl GifExporter {
     fn collect_cells_for_step(&self, store: &RockStore, step: u32) -> Result<Vec<(CellIndex, AsthenosphereCell)>, Box<dyn std::error::Error>> {
         let mut cells = Vec::new();
         
-        crate::h30_utils::H3Utils::iter_at(ASTH_RES, |cell_index| {
+        crate::h3o_utils::H3Utils::iter_at(ASTH_RES, |cell_index| {
             if let Ok(Some(cell)) = store.get_asth(cell_index, step) {
                 cells.push((cell_index, cell));
             }

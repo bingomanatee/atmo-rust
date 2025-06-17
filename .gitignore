@@ -29,3 +29,6 @@ Thumbs.db
 
 # Generated data (optional - you might want to commit sample data)
 # public/simulation_data.json
+
+
+vis/**/*.png
