@@ -8,17 +8,30 @@ use serde::{Deserialize, Serialize};
 use crate::asth_constants::{AVG_STARTING_VOLUME, K_PER_VOLUME, MAX_SUNK_PERCENT, MAX_SUNK_TEMP, MIN_SUNK_TEMP};
 
 /**
-some assumptions: the meaningfful volume of the aesthenosphere we track is a 10km
+some assumptions: the meaningful volume of the asthenosphere we track is a 10km
 at l2, the area is 426 km^2, the volume of the average cell is 4260 km^3
 */
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct AsthenosphereCell {
     pub cell: CellIndex,
-    pub location: Vec3,
     pub neighbors: Vec<CellIndex>,
     pub step: u32,
     pub volume: f64,   // c. 2 MIO KM3 per
     pub energy_k: f64, // Temp in kelvin; each unit of volume adds 2073, cools by 20 per MIO years
+}
+
+impl Default for AsthenosphereCell {
+    fn default() -> Self {
+        let cell= CellIndex::base_cells().last().expect("no last cell");
+        AsthenosphereCell {
+            cell,
+            volume: 0.0,
+            energy_k: 0.0,
+            neighbors: Vec::new(),
+            // initialize other fields with sensible defaults
+            step: 0,
+        }
+    }
 }
 
 pub const ASTH_RES: Resolution = Resolution::Two;
@@ -37,7 +50,6 @@ where
 #[derive(Clone)]
 struct AsthenosphereCellParams {
     cell: CellIndex,
-    location: Vec3,
     volume_kg_3: f64,
     energy_per_volume: f64,
 }
@@ -60,18 +72,33 @@ impl AsthenosphereCell {
         } = args;
         let resolution = res.unwrap_or(ASTH_RES);
         let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
-        let per = Perlin::new(100);
+        // Use a different seed for initial generation to avoid conflicts with step-based seeds
+        let per = Perlin::new(42);
         let mut index = 0u32;
         H3Utils::iter_at(ASTH_RES, |l2_cell| {
             let location = gc.cell_to_vec3(l2_cell);
             let [x, y, z] = location.normalize().to_array();
-            let noise_val = per.get([x as f64, y as f64, z as f64]);
-            let random_scale = 1.0 +  (noise_val  / 4.0); // 0.5...1.5
-            let count = AVG_STARTING_VOLUME * random_scale as f64;
+
+            // Enhanced Perlin noise with much higher frequency for very detailed initial patterns
+            let noise_scale = 25.0; // Much higher scale for very detailed initial patterns
+            let scaled_x = x as f64 * noise_scale;
+            let scaled_y = y as f64 * noise_scale;
+            let scaled_z = z as f64 * noise_scale;
+            let noise_val = per.get([scaled_x, scaled_y, scaled_z]);
+
+            // Use exponential function to create more extreme spikes
+            // This creates sharp peaks and valleys instead of smooth gradients
+            let exponential_noise = if noise_val > 0.0 {
+                noise_val.powf(3.0) // Cube positive values for sharp peaks
+            } else {
+                -((-noise_val).powf(3.0)) // Cube negative values for sharp valleys
+            };
+
+            let random_scale = 1.0 + (exponential_noise / 6.0); // Slightly reduced range: ~0.83...1.17
+            let volume = AVG_STARTING_VOLUME * random_scale as f64;
             let asth_cell = AsthenosphereCell::at_cell(AsthenosphereCellParams {
                 cell: l2_cell,
-                location,
-                volume_kg_3: count,
+                volume_kg_3: volume,
                 energy_per_volume,
             });
 
@@ -93,9 +120,7 @@ impl AsthenosphereCell {
         AsthenosphereCell {
             cell: params.cell,
             volume: params.volume_kg_3,
-            energy_k: K_PER_VOLUME * params.volume_kg_3, // average starting cound is 10
-            // avg starting energy is 2000K
-            location: params.location,
+            energy_k: K_PER_VOLUME * params.volume_kg_3, // should sum to around 2000k at start
             step: 0,
             neighbors: params
                 .cell
@@ -104,6 +129,13 @@ impl AsthenosphereCell {
                 .filter(|&c| c != params.cell)
                 .collect::<Vec<CellIndex>>(),
         }
+    }
+
+    /// Dynamically compute the location vector for this cell using the given planet and resolution.
+    pub fn location(&self, planet: &Planet, res: Option<Resolution>) -> Vec3 {
+        let resolution = res.unwrap_or(ASTH_RES);
+        let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
+        gc.cell_to_vec3(self.cell)
     }
 }
 
@@ -144,5 +176,3 @@ mod tests {
         assert_eq!(cell_count, 5882, "wrong cell count");
     }
 }
-
-// see notes in asthenosphere.rs

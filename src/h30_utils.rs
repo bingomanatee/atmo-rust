@@ -1,5 +1,5 @@
-use h3o::{CellIndex, LatLng, Resolution};
 use glam::Vec3;
+use h3o::{CellIndex, LatLng, Resolution};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
@@ -11,7 +11,7 @@ pub struct PointSampler {
 
 impl PointSampler {
     /// Create a new sampler for one plate
-    pub fn new( planet_radius_km: i32) -> Self {
+    pub fn new(planet_radius_km: i32) -> Self {
         PointSampler {
             primary_cells: CellIndex::base_cells().collect(),
             current_index: 0,
@@ -90,13 +90,19 @@ impl H3Utils {
             }
         }
     }
+
+    pub fn iter_at_iter(resolution: Resolution) -> impl Iterator<Item = CellIndex> {
+        let mut cells = Vec::new();
+        H3Utils::iter_at(resolution, |cell| cells.push(cell));
+        cells.into_iter()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
     use crate::planet::EARTH_RADIUS_KM;
+    use glam::Vec3;
 
     #[test]
     fn test_point_sampler_creation() {
@@ -118,7 +124,12 @@ mod tests {
         // The length should be close to radius_km (allow small floating error)
         let radius_f64 = radius_km as f32;
         let epsilon = 1.0; // 1 km tolerance
-        assert!((length - radius_f64).abs() < epsilon, "Point length {} not close to radius {}", length, radius_f64);
+        assert!(
+            (length - radius_f64).abs() < epsilon,
+            "Point length {} not close to radius {}",
+            length,
+            radius_f64
+        );
     }
 
     #[test]
@@ -143,7 +154,12 @@ mod tests {
             let length = point.length();
             let radius_f64 = radius_km as f32;
             let epsilon = 1.0;
-            assert!((length - radius_f64).abs() < epsilon, "Point length {} not close to radius {}", length, radius_f64);
+            assert!(
+                (length - radius_f64).abs() < epsilon,
+                "Point length {} not close to radius {}",
+                length,
+                radius_f64
+            );
         }
     }
 
@@ -181,19 +197,30 @@ mod tests {
         let sum: f32 = closest_distances.iter().sum();
         let avg_distance = sum / closest_distances.len() as f32;
 
-        let variance = closest_distances.iter()
+        let variance = closest_distances
+            .iter()
             .map(|d| {
                 let diff = d - avg_distance as f32;
                 diff * diff
             })
-            .sum::<f32>() / closest_distances.len() as f32;
+            .sum::<f32>()
+            / closest_distances.len() as f32;
         let std_dev = variance.sqrt();
 
-        println!("Closest neighbor distances (km): min = {:.2}, avg = {:.2}, std dev = {:.2}", min_distance, avg_distance, std_dev);
+        println!(
+            "Closest neighbor distances (km): min = {:.2}, avg = {:.2}, std dev = {:.2}",
+            min_distance, avg_distance, std_dev
+        );
 
         // Basic sanity checks
-        assert!(min_distance > 100.0, "Minimum closest neighbor distance should be > 100");
-        assert!(avg_distance > 1000.0, "Average closest neighbor distance should be > 1000");
+        assert!(
+            min_distance > 100.0,
+            "Minimum closest neighbor distance should be > 100"
+        );
+        assert!(
+            avg_distance > 1000.0,
+            "Average closest neighbor distance should be > 1000"
+        );
         assert!(std_dev >= 300.0, "Standard deviation should be >= 300");
     }
 }
