@@ -7,7 +7,11 @@ use crate::asthenosphere::ASTH_RES;
 use crate::planet::Planet;
 use crate::constants::{AVG_STARTING_VOLUME_KM_3, CELL_JOULES_START, CELL_JOULES_EQUILIBRIUM};
 use h3o::{CellIndex, LatLng};
-
+#[derive(Clone, Copy, Debug)]
+struct ColorPoint {
+    value: f64,    // normalized energy value between 0.0 and 1.0
+    color: Rgb<u8>,
+}
 pub struct PngExporter {
     width: u32,
     height: u32,
@@ -480,44 +484,57 @@ impl PngExporter {
         // Bottom label (coldest)
         self.draw_simple_text(image, "0e24", legend_x - 10, cold_y);
     }
-    
+    fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
+        (a as f64 + (b as f64 - a as f64) * t).round() as u8
+    }
     /// Extract color calculation for reuse in histogram
+    /// Linear interpolation between two colors
+    fn lerp_color(c1: Rgb<u8>, c2: Rgb<u8>, t: f64) -> Rgb<u8> {
+        let r = Self::lerp_u8(c1[0], c2[0], t);
+        let g = Self::lerp_u8(c1[1], c2[1], t);
+        let b = Self::lerp_u8(c1[2], c2[2], t);
+        Rgb([r, g, b])
+    }
+
+    /// Map normalized energy value [0.0, 1.0] to color by interpolating between defined color points
     fn energy_to_color(&self, energy_normalized: f64) -> Rgb<u8> {
-        let (red, green, blue) = if energy_normalized >= 0.8 {
-            // White (hottest: 0.8-1.0) - smooth transition to pure white
-            let t = (energy_normalized - 0.8) / 0.2;
-            let intensity = 200.0 + (55.0 * t); // Goes from light gray to white
-            (intensity as u8, intensity as u8, intensity as u8)
-        } else if energy_normalized >= 0.6 {
-            // Yellow to Light Gray (hot: 0.6-0.8) 
-            let t = (energy_normalized - 0.6) / 0.2;
-            let red_val = 255.0;
-            let green_val = 255.0; 
-            let blue_val = 100.0 + (100.0 * t); // Yellow (100) to light gray (200)
-            (red_val as u8, green_val as u8, blue_val as u8)
-        } else if energy_normalized >= 0.4 {
-            // Orange to Yellow (warm: 0.4-0.6)
-            let t = (energy_normalized - 0.4) / 0.2;
-            let red_val = 255.0;
-            let green_val = 150.0 + (105.0 * t); // Orange (150) to Yellow (255)
-            let blue_val = 0.0 + (100.0 * t); // Orange (0) to Yellow (100)
-            (red_val as u8, green_val as u8, blue_val as u8)
-        } else if energy_normalized >= 0.2 {
-            // Red to Orange (medium: 0.2-0.4)
-            let t = (energy_normalized - 0.2) / 0.2;
-            let red_val = 255.0;
-            let green_val = 0.0 + (150.0 * t); // Red (0) to Orange (150)
-            let blue_val = 0.0;
-            (red_val as u8, green_val as u8, blue_val as u8)
-        } else {
-            // Purple to Red (coldest: 0.0-0.2)
-            let t = energy_normalized / 0.2;
-            let red_val = 128.0 + (127.0 * t); // Purple (128) to Red (255)
-            let green_val = 0.0;
-            let blue_val = 255.0 * (1.0 - t); // Purple (255) to Red (0)
-            (red_val as u8, green_val as u8, blue_val as u8)
-        };
-        
-        Rgb([red, green, blue])
+        // Define gradient points (value must be in ascending order)
+        // You can adjust these colors as you like
+        let gradient = [
+            ColorPoint { value: 0.0, color: Rgb([128, 0, 255]) },   // Purple
+            ColorPoint { value: 0.2, color: Rgb([255, 0, 0]) },     // Red
+            ColorPoint { value: 0.4, color: Rgb([255, 150, 0]) },   // Orange
+            ColorPoint { value: 0.6, color: Rgb([255, 255, 0]) },   // Yellow
+            ColorPoint { value: 0.8, color: Rgb([255, 255, 255]) }, // White
+            // Optionally add more points for smoother gradient
+        ];
+
+        // Clamp input
+        let val = energy_normalized.clamp(0.0, 1.0);
+
+        // If val matches exactly a point, return its color
+        for point in &gradient {
+            if (val - point.value).abs() < 1e-8 {
+                return point.color;
+            }
+        }
+
+        // Find two points between which val lies
+        let mut lower = &gradient[0];
+        let mut upper = &gradient[gradient.len() - 1];
+
+        for window in gradient.windows(2) {
+            if val >= window[0].value && val <= window[1].value {
+                lower = &window[0];
+                upper = &window[1];
+                break;
+            }
+        }
+
+        // Compute interpolation factor t in [0,1]
+        let t = (val - lower.value) / (upper.value - lower.value);
+
+        // Interpolate color
+        Self::lerp_color(lower.color, upper.color, t)
     }
 }
