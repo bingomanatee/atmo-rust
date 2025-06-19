@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::rc::Rc;
 use uuid::Uuid;
-use crate::asl_direct_transfer_leveller::level_cells_direct_transfer;
+use crate::asl_binary_pair_leveller::{AslBinaryPairLeveller, BinaryPair};
 
 struct AsthChange {
     energy_j: f64,
@@ -54,6 +54,7 @@ pub struct AsthSimLinked {
     visualize: bool,
     debug: bool,
     png_exporter: Option<PngExporter>, // Reusable PNG exporter with cached spatial grid
+    binary_pairs: Vec<BinaryPair>, // Pre-computed binary pairs for efficient levelling
 }
 
 impl AsthSimLinked {
@@ -77,6 +78,7 @@ impl AsthSimLinked {
                     vis_freq: config.vis_freq,
                     debug: config.debug,
                     png_exporter,
+                    binary_pairs: Vec::new(), // Will be populated after cells are created
                 }
             },
             Err(e) => {
@@ -98,6 +100,11 @@ impl AsthSimLinked {
         };
 
         AsthenosphereCell::initial_cells_for_planet(init_config);
+
+        // Generate binary pairs for efficient levelling after cells are created
+        sim.binary_pairs = AslBinaryPairLeveller::generate_pairs_from_cells(&sim.cells);
+        println!("🔗 Generated {} binary pairs for levelling", sim.binary_pairs.len());
+
         sim
     }
 
@@ -247,8 +254,9 @@ impl AsthSimLinked {
     }
 
     pub fn level_cells(&self) {
-        // Use direct transfer levelling for perfect conservation
-        level_cells_direct_transfer(&self.cells);
+        // Use binary pair levelling for perfect conservation and efficiency
+        let leveller = AslBinaryPairLeveller::new(self.binary_pairs.clone());
+        leveller.level_pairs(&self.cells);
     }
 
     pub fn process_anomalies(&self) {
