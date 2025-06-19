@@ -3,6 +3,7 @@ use crate::constants::LEVEL_AMT;
 use h3o::CellIndex;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::rc::Rc;
 
 /// Binary pair for levelling - represents two cells that will equalize towards each other
@@ -14,12 +15,43 @@ pub struct BinaryPair {
 
 impl BinaryPair {
     pub fn new(cell_a: CellIndex, cell_b: CellIndex) -> Self {
-        // Ensure consistent ordering to avoid duplicate pairs (A,B) and (B,A)
-        if cell_a < cell_b {
+        // Ensure consistent ordering: first id should be higher than second to avoid redundant pairs
+        if cell_a > cell_b {
             Self { cell_a, cell_b }
         } else {
             Self { cell_a: cell_b, cell_b: cell_a }
         }
+    }
+
+    /// Create a unique string ID for this binary pair
+    pub fn to_string_id(&self) -> String {
+        format!("{}:{}", self.cell_a, self.cell_b)
+    }
+
+    /// Create a BinaryPair from a string ID (for debugging/testing)
+    pub fn from_string_id(id: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = id.split(':').collect();
+        if parts.len() != 2 {
+            return Err(format!("Invalid pair ID format: {}", id));
+        }
+
+        let cell_a = parts[0].parse::<u64>()
+            .map_err(|_| format!("Invalid cell_a in pair ID: {}", parts[0]))?;
+        let cell_b = parts[1].parse::<u64>()
+            .map_err(|_| format!("Invalid cell_b in pair ID: {}", parts[1]))?;
+
+        let cell_a_index = CellIndex::try_from(cell_a)
+            .map_err(|_| format!("Invalid CellIndex for cell_a: {}", cell_a))?;
+        let cell_b_index = CellIndex::try_from(cell_b)
+            .map_err(|_| format!("Invalid CellIndex for cell_b: {}", cell_b))?;
+
+        Ok(BinaryPair::new(cell_a_index, cell_b_index))
+    }
+}
+
+impl fmt::Display for BinaryPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.cell_a, self.cell_b)
     }
 }
 
@@ -35,12 +67,13 @@ impl AslBinaryPairLeveller {
     }
 
     /// Generate binary pairs from a collection of cells
-    /// Each cell is paired with its immediate neighbors
+    /// Each cell is paired with its immediate neighbors, ensuring no duplicate pairs
+    /// Uses string IDs to guarantee absolute uniqueness
     pub fn generate_pairs_from_cells(
         cells: &HashMap<CellIndex, Rc<RefCell<AsthenosphereCellLinked>>>,
     ) -> Vec<BinaryPair> {
-        let mut pairs = HashSet::new();
-        
+        let mut pair_map: HashMap<String, BinaryPair> = HashMap::new();
+
         for &cell_index in cells.keys() {
             // Get neighbors for this cell using grid_disk
             let neighbors: Vec<CellIndex> = cell_index
@@ -53,11 +86,16 @@ impl AslBinaryPairLeveller {
             // Create binary pairs with each neighbor
             for neighbor in neighbors {
                 let pair = BinaryPair::new(cell_index, neighbor);
-                pairs.insert(pair);
+                let pair_id = pair.to_string_id();
+
+                // Only insert if we haven't seen this pair before
+                if !pair_map.contains_key(&pair_id) {
+                    pair_map.insert(pair_id, pair);
+                }
             }
         }
 
-        pairs.into_iter().collect()
+        pair_map.into_values().collect()
     }
 
     /// Level all binary pairs towards equilibrium
@@ -192,6 +230,215 @@ impl AslBinaryPairLeveller {
     /// Get a reference to the pairs (for debugging/inspection)
     pub fn pairs(&self) -> &[BinaryPair] {
         &self.pairs
+    }
+
+    /// Hole balancing: find neighbors within 2 steps that are significantly different
+    /// and move volume between them to achieve 75% equilibration
+    pub fn hole_balance(
+        &self,
+        cells: &HashMap<CellIndex, Rc<RefCell<AsthenosphereCellLinked>>>,
+    ) {
+        for &cell_id in cells.keys() {
+            self.hole_balance_cell(cell_id, cells);
+        }
+    }
+
+    /// Hole balance a single cell with its 2-step neighbors
+    fn hole_balance_cell(
+        &self,
+        cell_id: CellIndex,
+        cells: &HashMap<CellIndex, Rc<RefCell<AsthenosphereCellLinked>>>,
+    ) {
+        // Find 2-step neighbors by looking through binary pairs
+        // First, get 1-step neighbors (direct neighbors)
+        let mut one_step_neighbors = HashSet::new();
+        for pair in &self.pairs {
+            if pair.cell_a == cell_id {
+                one_step_neighbors.insert(pair.cell_b);
+            } else if pair.cell_b == cell_id {
+                one_step_neighbors.insert(pair.cell_a);
+            }
+        }
+
+        // Then, find 2-step neighbors (neighbors of neighbors, excluding 1-step and self)
+        let mut two_step_neighbors = HashSet::new();
+        for &neighbor in &one_step_neighbors {
+            for pair in &self.pairs {
+                if pair.cell_a == neighbor && pair.cell_b != cell_id && !one_step_neighbors.contains(&pair.cell_b) {
+                    two_step_neighbors.insert(pair.cell_b);
+                } else if pair.cell_b == neighbor && pair.cell_a != cell_id && !one_step_neighbors.contains(&pair.cell_a) {
+                    two_step_neighbors.insert(pair.cell_a);
+                }
+            }
+        }
+
+        if two_step_neighbors.is_empty() {
+            return;
+        }
+
+        // Get current cell's next volume (after binary levelling)
+        let current_volume = {
+            let cell = match cells.get(&cell_id) {
+                Some(cell) => cell,
+                None => return,
+            };
+            let borrowed = cell.borrow();
+            if let Some(next) = &borrowed.next {
+                next.borrow().cell.volume
+            } else {
+                return;
+            }
+        };
+
+        // Find the most different neighbor within 2 steps
+        let mut best_neighbor: Option<CellIndex> = None;
+        let mut best_difference = 0.0;
+
+        for &neighbor_id in &two_step_neighbors {
+            let neighbor_volume = {
+                let neighbor = match cells.get(&neighbor_id) {
+                    Some(neighbor) => neighbor,
+                    None => continue,
+                };
+                let borrowed = neighbor.borrow();
+                if let Some(next) = &borrowed.next {
+                    next.borrow().cell.volume
+                } else {
+                    continue;
+                }
+            };
+
+            // Calculate percentage difference
+            let avg_volume = (current_volume + neighbor_volume) / 2.0;
+            if avg_volume > 0.0 {
+                let percent_diff = ((current_volume - neighbor_volume).abs() / avg_volume) * 100.0;
+
+                // Must be more than 2% different
+                if percent_diff > 2.0 && percent_diff > best_difference {
+                    best_difference = percent_diff;
+                    best_neighbor = Some(neighbor_id);
+                }
+            }
+        }
+
+        // If we found a suitable neighbor, perform hole balancing
+        if let Some(neighbor_id) = best_neighbor {
+            self.execute_hole_balance(cell_id, neighbor_id, cells);
+        }
+    }
+
+    /// Execute hole balancing between two cells (75% equilibration)
+    fn execute_hole_balance(
+        &self,
+        cell_a_id: CellIndex,
+        cell_b_id: CellIndex,
+        cells: &HashMap<CellIndex, Rc<RefCell<AsthenosphereCellLinked>>>,
+    ) {
+        let cell_a = match cells.get(&cell_a_id) {
+            Some(cell) => cell,
+            None => return,
+        };
+        let cell_b = match cells.get(&cell_b_id) {
+            Some(cell) => cell,
+            None => return,
+        };
+
+        // Get current volumes and energies from next cells (after binary levelling)
+        let (volume_a, energy_a) = {
+            let borrowed_a = cell_a.borrow();
+            if let Some(next) = &borrowed_a.next {
+                let next_ref = next.borrow();
+                (next_ref.cell.volume, next_ref.cell.energy_j)
+            } else {
+                return;
+            }
+        };
+
+        let (volume_b, energy_b) = {
+            let borrowed_b = cell_b.borrow();
+            if let Some(next) = &borrowed_b.next {
+                let next_ref = next.borrow();
+                (next_ref.cell.volume, next_ref.cell.energy_j)
+            } else {
+                return;
+            }
+        };
+
+        // Calculate 75% equilibration
+        let total_volume = volume_a + volume_b;
+        let equilibrium_volume = total_volume / 2.0;
+        let volume_diff_a = equilibrium_volume - volume_a;
+        let volume_to_transfer = volume_diff_a * 0.75; // 75% equilibration
+
+        // Only transfer if there's a meaningful difference
+        if volume_to_transfer.abs() < 1e-10 {
+            return;
+        }
+
+        // Calculate energy transfer using fractional approach
+        let energy_to_transfer = if volume_to_transfer > 0.0 {
+            // A is gaining volume from B
+            if volume_b > 0.0 {
+                let fraction = volume_to_transfer / volume_b;
+                fraction * energy_b
+            } else {
+                0.0
+            }
+        } else {
+            // A is losing volume to B
+            if volume_a > 0.0 {
+                let fraction = volume_to_transfer.abs() / volume_a;
+                -(fraction * energy_a)
+            } else {
+                0.0
+            }
+        };
+
+        // Execute the transfer on next cells
+        self.execute_hole_balance_transfer(
+            cell_a,
+            cell_b,
+            volume_to_transfer,
+            energy_to_transfer,
+        );
+    }
+
+    /// Execute the hole balance transfer between two cells
+    fn execute_hole_balance_transfer(
+        &self,
+        cell_a: &Rc<RefCell<AsthenosphereCellLinked>>,
+        cell_b: &Rc<RefCell<AsthenosphereCellLinked>>,
+        volume_to_transfer: f64,
+        energy_to_transfer: f64,
+    ) {
+        let cell_a_borrow = cell_a.borrow();
+        let cell_b_borrow = cell_b.borrow();
+
+        if let (Some(next_a), Some(next_b)) = (&cell_a_borrow.next, &cell_b_borrow.next) {
+            let mut next_a_ref = next_a.borrow_mut();
+            let mut next_b_ref = next_b.borrow_mut();
+
+            // Direct 1:1 transfer for hole balancing
+            next_a_ref.cell.volume += volume_to_transfer;
+            next_a_ref.cell.energy_j += energy_to_transfer;
+
+            next_b_ref.cell.volume -= volume_to_transfer;
+            next_b_ref.cell.energy_j -= energy_to_transfer;
+
+            // Safety checks to prevent negative values
+            if next_a_ref.cell.volume < 0.0 {
+                next_a_ref.cell.volume = 0.0;
+            }
+            if next_a_ref.cell.energy_j < 0.0 {
+                next_a_ref.cell.energy_j = 0.0;
+            }
+            if next_b_ref.cell.volume < 0.0 {
+                next_b_ref.cell.volume = 0.0;
+            }
+            if next_b_ref.cell.energy_j < 0.0 {
+                next_b_ref.cell.energy_j = 0.0;
+            }
+        }
     }
 }
 

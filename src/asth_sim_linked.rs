@@ -254,9 +254,12 @@ impl AsthSimLinked {
     }
 
     pub fn level_cells(&self) {
-        // Use binary pair levelling for perfect conservation and efficiency
+        // Phase 1: Binary pair levelling for perfect conservation and efficiency
         let leveller = AslBinaryPairLeveller::new(self.binary_pairs.clone());
         leveller.level_pairs(&self.cells);
+
+        // Phase 2: Hole balancing for long-range equilibration (after binary levelling)
+        leveller.hole_balance(&self.cells);
     }
 
     pub fn process_anomalies(&self) {
