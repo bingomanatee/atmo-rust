@@ -94,7 +94,7 @@ impl AsthenosphereCell {
             };
 
             // Much more extreme variation: 0.3x to 2.5x the base volume
-            let random_scale = 0.3 + (exponential_noise + 1.0) * 1.1; // Maps [-1,1] to [0.3, 2.5]
+            let random_scale = 0.3 + (exponential_noise + 1.0) * 0.7; // Maps [-1,1] to [0.3, 2.5]
             let volume = AVG_STARTING_VOLUME_KM_3 * random_scale as f64;
             
             // Add independent energy variation using different noise parameters
@@ -111,7 +111,7 @@ impl AsthenosphereCell {
             };
             
             // Independent energy variation: 0.2x to 3.0x base energy per volume
-            let energy_scale = 0.2 + (energy_exponential_noise + 1.0) * 1.4; // Maps [-1,1] to [0.2, 3.0]
+            let energy_scale = 0.2 + (energy_exponential_noise + 1.0) * 0.8; // Maps [-1,1] to [0.2, 3.0]
             let adjusted_energy_per_volume = energy_per_volume * energy_scale;
             
             let asth_cell = AsthenosphereCell::at_cell(AsthenosphereCellParams {

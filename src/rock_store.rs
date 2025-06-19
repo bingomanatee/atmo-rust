@@ -1,8 +1,8 @@
-use crate::asth_sim::VolumeEnergyTransfer;
+use crate::deprecated::asth_sim::VolumeEnergyTransfer;
 use crate::asthenosphere::{AsthenosphereCell, ASTH_RES};
 use crate::h3_utils::H3Utils;
 use crate::planet::Planet;
-use crate::plate::Plate;
+use crate::deprecated::plate::Plate;
 use crate::sim::Sim;
 use bincode;
 use h3o::{CellIndex, Resolution};
