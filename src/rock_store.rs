@@ -1,10 +1,11 @@
 use crate::asth_sim::VolumeEnergyTransfer;
-use crate::asthenosphere::AsthenosphereCell;
+use crate::asthenosphere::{AsthenosphereCell, ASTH_RES};
+use crate::h3_utils::H3Utils;
 use crate::planet::Planet;
 use crate::plate::Plate;
 use crate::sim::Sim;
 use bincode;
-use h3o::CellIndex;
+use h3o::{CellIndex, Resolution};
 use rayon::prelude::*;
 use rocksdb::Error as RocksDbError;
 use rocksdb::{DB, Options, WriteBatch};
@@ -14,6 +15,7 @@ use uuid::Uuid;
 pub struct RockStore {
     db: DB,
 }
+
 
 impl RockStore {
     pub fn open(path: &str) -> Result<Self, rocksdb::Error> {
@@ -81,7 +83,7 @@ impl RockStore {
     }
     // Save AsthenosphereCell
     pub fn put_asth(&self, a: &AsthenosphereCell) -> Result<(), rocksdb::Error> {
-        let key = Self::key_asth(&a.cell, a.step);
+        let key = Self::key_asth(&a.id, a.step);
         let value = bincode::serialize(a).unwrap();
         self.db.put(key, value)
     }
@@ -158,7 +160,7 @@ impl RockStore {
     pub fn put_asth_batch(&self, cells: &[AsthenosphereCell]) {
         let mut batch = WriteBatch::default();
         for cell in cells {
-            let key = RockStore::key_asth(&cell.cell, cell.step);
+            let key = RockStore::key_asth(&cell.id, cell.step);
             let value = bincode::serialize(cell).expect("serialize failed");
             batch.put(key, value);
         }
@@ -235,7 +237,7 @@ impl RockStore {
                 if let Ok(Some(mut cell)) = self.get_asth(cell_index, step) {
                     let (vol, energy) = change;
                     cell.volume += vol; 
-                    cell.energy_k += energy; 
+                    cell.energy_j += energy; 
                     Some(cell)
                 } else {
                     None
@@ -262,6 +264,8 @@ impl RockStore {
         let key = RockStore::key_transfer(&transfer.id, transfer.step);
         self.db.put(key, serialized)
     }
+
+
 }
 
 #[cfg(test)]
@@ -288,19 +292,23 @@ mod tests {
         let cell2 = CellIndex::try_from(0x85283447fffffff).unwrap(); // Another H3 cell
 
         let mut asth_cell1 = AsthenosphereCell {
-            cell: cell1,
+            id: cell1,
             volume: 1000.0,
-            energy_k: 2000.0,
+            energy_j: 2000.0,
             step,
             neighbors: vec![cell2],
+            anomaly_energy: 0.0,
+            anomaly_volume: 0.0,
         };
 
         let mut asth_cell2 = AsthenosphereCell {
-            cell: cell2,
+            id: cell2,
             volume: 500.0,
-            energy_k: 1000.0,
+            energy_j: 1000.0,
             step,
             neighbors: vec![cell1],
+            anomaly_energy: 0.0,
+            anomaly_volume: 0.0,
         };
 
         // Store initial cells
@@ -337,11 +345,11 @@ mod tests {
 
         // Cell1 should have lost volume and energy
         assert_eq!(updated_cell1.volume, 900.0); // 1000.0 - 100.0
-        assert_eq!(updated_cell1.energy_k, 1800.0); // 2000.0 - 200.0
+        assert_eq!(updated_cell1.energy_j, 1800.0); // 2000.0 - 200.0
 
         // Cell2 should have gained volume and energy
         assert_eq!(updated_cell2.volume, 600.0); // 500.0 + 100.0
-        assert_eq!(updated_cell2.energy_k, 1200.0); // 1000.0 + 200.0
+        assert_eq!(updated_cell2.energy_j, 1200.0); // 1000.0 + 200.0
 
         // Verify that the transfer was deleted
         let mut transfer_count = 0;

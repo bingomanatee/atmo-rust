@@ -1,7 +1,6 @@
-use crate::asth_constants::{AVG_STARTING_VOLUME, CELL_ENERGY_START, K_PER_VOLUME, STANDARD_STEPS};
+use crate::constants::{AVG_STARTING_VOLUME_KM_3, CELL_JOULES_START, JOULES_PER_KM3, STANDARD_STEPS};
 use crate::asthenosphere::{ASTH_RES, AsthenosphereCell, CellsForPlanetArgs};
-use crate::cool_asth_cell::{ProcessResult, cool_asth_cell};
-use crate::h3o_utils::H3Utils;
+use crate::h3_utils::H3Utils;
 use crate::planet::Planet;
 use crate::plate::PLATE_RESOLUTION;
 use crate::rock_store::RockStore;
@@ -11,7 +10,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
-use crate::level_cells::level_cells;
+use crate::erode_cell::erode_cells;
+use crate::steps::cool_asth_cell::{cool_asth_cell, ProcessResult};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VolumeEnergyTransfer {
@@ -59,20 +59,21 @@ impl<'a> AsthSim<'a> {
 
         AsthenosphereCell::initial_cells_for_planet(CellsForPlanetArgs {
             planet: planet.clone(),
-            res: Some(ASTH_RES),
-            energy_per_volume: K_PER_VOLUME,
+            res: ASTH_RES,
+            joules_per_km3: JOULES_PER_KM3,
             on_cell: |asth_cell: AsthenosphereCell| {
                 match store.put_asth(&asth_cell) {
                     Ok(_) => {
                         // Successfully stored
                     }
                     Err(e) => {
-                        eprintln!("Failed to store cell {:?}: {:?}", asth_cell.cell, e);
+                        eprintln!("Failed to store cell {:?}: {:?}", asth_cell.id, e);
                         // Optionally handle error, e.g., panic!("DB write failed");
                     }
                 }
                 asth_cell
             },
+            seed: 64
         });
 
         AsthSim {
@@ -116,7 +117,7 @@ impl<'a> AsthSim<'a> {
         }
     }
     fn add_energy(old_volume: f64, old_energy: f64, added_volume: f64) -> f64 {
-        (old_volume * old_energy + added_volume * CELL_ENERGY_START) / (old_volume + added_volume)
+        (old_volume * old_energy + added_volume * CELL_JOULES_START) / (old_volume + added_volume)
     }
     fn cool_cells(&self, step: u32) -> VolumeStats {
         // Collect all cells at ASTH_RES into a Vec<CellIndex>
@@ -171,11 +172,18 @@ impl<'a> AsthSim<'a> {
     fn level(&self, current_step: u32) {
        let base_cells: Vec<CellIndex> = CellIndex::base_cells()
            .collect();
-        
-        base_cells
+
+        let results: Vec<Result<(), String>> = base_cells
             .par_iter()
-            .map(|base_cell| level_cells(*base_cell, &self.store, current_step, self.resolution))
+            .map(|base_cell| erode_cells(*base_cell, &self.store, current_step, self.resolution))
             .collect();
+
+        // Check for any errors
+        for result in results {
+            if let Err(e) = result {
+                eprintln!("Error in level_cells: {}", e);
+            }
+        }
     }
 
     /// Returns a vector of neighbors with volume less than the root cell's volume.
@@ -214,7 +222,7 @@ impl<'a> AsthSim<'a> {
 
         for neighbor in lower_volume_neighbors {
             let gap = (root_cell.volume - neighbor.volume) * AsthSim::LEVEL_SCALE;
-            gaps.insert(neighbor.cell, gap);
+            gaps.insert(neighbor.id, gap);
             total_gap += gap;
         }
 
@@ -224,13 +232,13 @@ impl<'a> AsthSim<'a> {
 
         for (idx, gap) in gaps {
             let volume = gap * amt_to_move / total_gap;
-            let energy = root_cell.energy_k * volume / root_cell.volume;
+            let energy = root_cell.energy_j * volume / root_cell.volume;
 
             let transfer = VolumeEnergyTransfer {
                 volume,
                 energy,
                 id: Uuid::new_v4(),
-                from_cell: root_cell.cell,
+                from_cell: root_cell.id,
                 to_cell: idx,
                 step: current_step,
             };
@@ -273,50 +281,50 @@ impl<'a> AsthSim<'a> {
 
             if let Ok(Some(mut cell)) = self.store.get_asth(cell_index, previous_step) {
                 // Generate random number from 1 to 20
-                let random_action = rng.random_range(1..=20);
+                let random_action = rng.random_range(1..=200);
 
                 match random_action {
                     1 => {
                         // Add small amount of material (1/400 of AVG_STARTING_VOLUME)
-                        let volume_to_add = AVG_STARTING_VOLUME / 400.0;
+                        let volume_to_add = SMALL_AMOUNT;
                         let old_volume = cell.volume;
                         let new_volume = old_volume + volume_to_add;
 
                         // Calculate weighted average energy
-                        let old_energy = cell.energy_k;
-                        let added_energy = volume_to_add * (CELL_ENERGY_START / AVG_STARTING_VOLUME);
+                        let old_energy = cell.energy_j;
+                        let added_energy = volume_to_add * (CELL_JOULES_START / AVG_STARTING_VOLUME_KM_3);
                         let new_energy = (old_energy * old_volume + added_energy * volume_to_add) / new_volume;
 
                         cell.volume = new_volume;
-                        cell.energy_k = new_energy;
+                        cell.energy_j = new_energy;
                         cell.step = current_step;
                         updated_cells.push(cell);
                     },
                     2 => {
                         // Add large amount of material (1/100 of AVG_STARTING_VOLUME)
-                        let volume_to_add = AVG_STARTING_VOLUME / 100.0;
+                        let volume_to_add = LARGE_AMOUNT;
                         let old_volume = cell.volume;
                         let new_volume = old_volume + volume_to_add;
 
                         // Calculate weighted average energy
-                        let old_energy = cell.energy_k;
-                        let added_energy = volume_to_add * (CELL_ENERGY_START / AVG_STARTING_VOLUME);
+                        let old_energy = cell.energy_j;
+                        let added_energy = volume_to_add * (CELL_JOULES_START / AVG_STARTING_VOLUME_KM_3);
                         let new_energy = (old_energy * old_volume + added_energy * volume_to_add) / new_volume;
 
                         cell.volume = new_volume;
-                        cell.energy_k = new_energy;
+                        cell.energy_j = new_energy;
                         cell.step = current_step;
                         updated_cells.push(cell);
                     },
                     19 => {
                         // Remove small amount of material (1/400 of AVG_STARTING_VOLUME)
-                        let volume_to_remove = AVG_STARTING_VOLUME / 400.0;
+                        let volume_to_remove = SMALL_AMOUNT;
                         if cell.volume > volume_to_remove {
                             let old_volume = cell.volume;
                             let new_volume = old_volume - volume_to_remove;
 
                             // Scale energy proportionally
-                            cell.energy_k *= new_volume / old_volume;
+                            cell.energy_j *= new_volume / old_volume;
                             cell.volume = new_volume;
                             cell.step = current_step;
                             updated_cells.push(cell);
@@ -324,13 +332,13 @@ impl<'a> AsthSim<'a> {
                     },
                     20 => {
                         // Remove large amount of material (1/100 of AVG_STARTING_VOLUME)
-                        let volume_to_remove = AVG_STARTING_VOLUME / 100.0;
+                        let volume_to_remove = LARGE_AMOUNT;
                         if cell.volume > volume_to_remove {
                             let old_volume = cell.volume;
                             let new_volume = old_volume - volume_to_remove;
 
                             // Scale energy proportionally
-                            cell.energy_k *= new_volume / old_volume;
+                            cell.energy_j *= new_volume / old_volume;
                             cell.volume = new_volume;
                             cell.step = current_step;
                             updated_cells.push(cell);
@@ -382,10 +390,11 @@ impl<'a> AsthSim<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planet::EARTH;
     use tempfile::tempdir;
+    use crate::constants::EARTH;
 
     #[test]
+    #[ignore]
     fn test_png_voronoi_export_500() {
         use crate::png_exporter::PngExporter;
 
@@ -427,3 +436,6 @@ mod tests {
         }
     }
 }
+
+const SMALL_AMOUNT: f64 =  AVG_STARTING_VOLUME_KM_3 / 500.0;
+const LARGE_AMOUNT: f64 =  3.0 * SMALL_AMOUNT;

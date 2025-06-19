@@ -1,11 +1,13 @@
+use crate::constants::{
+    AVG_STARTING_VOLUME_KM_3, JOULES_PER_KM3, MAX_SUNK_PERCENT, MAX_SUNK_TEMP, MIN_SUNK_TEMP,
+};
 use crate::geoconverter::GeoCellConverter;
-use crate::h3o_utils::H3Utils;
+use crate::h3_utils::H3Utils;
 use crate::planet::Planet;
 use glam::Vec3;
 use h3o::{CellIndex, Resolution};
 use noise::{NoiseFn, Perlin};
 use serde::{Deserialize, Serialize};
-use crate::asth_constants::{AVG_STARTING_VOLUME, K_PER_VOLUME, MAX_SUNK_PERCENT, MAX_SUNK_TEMP, MIN_SUNK_TEMP};
 
 /**
 some assumptions: the meaningful volume of the asthenosphere we track is a 10km
@@ -13,23 +15,26 @@ at l2, the area is 426 km^2, the volume of the average cell is 4260 km^3
 */
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct AsthenosphereCell {
-    pub cell: CellIndex,
+    pub id: CellIndex,
     pub neighbors: Vec<CellIndex>,
     pub step: u32,
     pub volume: f64,   // c. 2 MIO KM3 per
-    pub energy_k: f64, // Temp in kelvin; each unit of volume adds 2073, cools by 20 per MIO years
+    pub energy_j: f64, // Temp in kelvin; each unit of volume adds 2073, cools by 20 per MIO years
+    pub anomaly_energy: f64, // Additional energy from anomalies (flows)
+    pub anomaly_volume: f64, // Additional volume from anomalies (flows)
 }
 
 impl Default for AsthenosphereCell {
     fn default() -> Self {
-        let cell= CellIndex::base_cells().last().expect("no last cell");
+        let cell = CellIndex::base_cells().last().expect("no last cell");
         AsthenosphereCell {
-            cell,
+            id: cell,
             volume: 0.0,
-            energy_k: 0.0,
+            energy_j: 0.0,
             neighbors: Vec::new(),
-            // initialize other fields with sensible defaults
             step: 0,
+            anomaly_energy: 0.0,
+            anomaly_volume: 0.0,
         }
     }
 }
@@ -43,8 +48,9 @@ where
 {
     pub planet: Planet,
     pub on_cell: F,
-    pub res: Option<Resolution>,
-    pub energy_per_volume: f64,
+    pub res: Resolution,
+    pub joules_per_km3: f64,
+    pub seed: u32,
 }
 
 #[derive(Clone)]
@@ -68,38 +74,50 @@ impl AsthenosphereCell {
             planet,
             mut on_cell,
             res,
-            energy_per_volume,
+            joules_per_km3: energy_per_volume,
+            seed,
         } = args;
-        let resolution = res.unwrap_or(ASTH_RES);
+        let resolution = res;
         let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
-        // Use a different seed for initial generation to avoid conflicts with step-based seeds
-        let per = Perlin::new(42);
+        let per = Perlin::new(seed);
         let mut index = 0u32;
-        H3Utils::iter_at(ASTH_RES, |l2_cell| {
+        H3Utils::iter_at(res, |l2_cell| {
             let location = gc.cell_to_vec3(l2_cell);
-            let [x, y, z] = location.normalize().to_array();
+            let noise_scale = 25.0;
+            let scaled_location = location.normalize() * noise_scale as f32;
+            let noise_val = per.get(scaled_location.to_array().map(|n| n as f64));
 
-            // Enhanced Perlin noise with much higher frequency for very detailed initial patterns
-            let noise_scale = 25.0; // Much higher scale for very detailed initial patterns
-            let scaled_x = x as f64 * noise_scale;
-            let scaled_y = y as f64 * noise_scale;
-            let scaled_z = z as f64 * noise_scale;
-            let noise_val = per.get([scaled_x, scaled_y, scaled_z]);
-
-            // Use exponential function to create more extreme spikes
-            // This creates sharp peaks and valleys instead of smooth gradients
             let exponential_noise = if noise_val > 0.0 {
-                noise_val.powf(3.0) // Cube positive values for sharp peaks
+                noise_val.powf(2.0) // Less extreme exponent for smoother variation
             } else {
-                -((-noise_val).powf(3.0)) // Cube negative values for sharp valleys
+                -((-noise_val).powf(2.0))
             };
 
-            let random_scale = 1.0 + (exponential_noise / 6.0); // Slightly reduced range: ~0.83...1.17
-            let volume = AVG_STARTING_VOLUME * random_scale as f64;
+            // Much more extreme variation: 0.3x to 2.5x the base volume
+            let random_scale = 0.3 + (exponential_noise + 1.0) * 1.1; // Maps [-1,1] to [0.3, 2.5]
+            let volume = AVG_STARTING_VOLUME_KM_3 * random_scale as f64;
+            
+            // Add independent energy variation using different noise parameters
+            let energy_noise_val = per.get([
+                (scaled_location.x * 1.7) as f64, 
+                (scaled_location.y * 1.7) as f64, 
+                (scaled_location.z * 1.7) as f64
+            ]);
+            
+            let energy_exponential_noise = if energy_noise_val > 0.0 {
+                energy_noise_val.powf(1.5)
+            } else {
+                -((-energy_noise_val).powf(1.5))
+            };
+            
+            // Independent energy variation: 0.2x to 3.0x base energy per volume
+            let energy_scale = 0.2 + (energy_exponential_noise + 1.0) * 1.4; // Maps [-1,1] to [0.2, 3.0]
+            let adjusted_energy_per_volume = energy_per_volume * energy_scale;
+            
             let asth_cell = AsthenosphereCell::at_cell(AsthenosphereCellParams {
                 cell: l2_cell,
                 volume_kg_3: volume,
-                energy_per_volume,
+                energy_per_volume: adjusted_energy_per_volume,
             });
 
             on_cell(asth_cell);
@@ -108,19 +126,19 @@ impl AsthenosphereCell {
     }
 
     pub fn sunk_volume(&self) -> f64 {
-        if self.energy_k as f64 >= MAX_SUNK_TEMP {
+        if self.energy_j as f64 >= MAX_SUNK_TEMP {
             return 0.0;
         }
-        let effective_energy: f64 = (self.energy_k as f64).max(MIN_SUNK_TEMP);
+        let effective_energy: f64 = (self.energy_j as f64).max(MIN_SUNK_TEMP);
         let percent = MAX_SUNK_PERCENT * effective_energy / (MAX_SUNK_TEMP / MIN_SUNK_TEMP);
         self.volume * percent
     }
 
     pub fn at_cell(params: AsthenosphereCellParams) -> AsthenosphereCell {
         AsthenosphereCell {
-            cell: params.cell,
+            id: params.cell,
             volume: params.volume_kg_3,
-            energy_k: K_PER_VOLUME * params.volume_kg_3, // should sum to around 2000k at start
+            energy_j: params.energy_per_volume * params.volume_kg_3,
             step: 0,
             neighbors: params
                 .cell
@@ -128,49 +146,48 @@ impl AsthenosphereCell {
                 .into_iter()
                 .filter(|&c| c != params.cell)
                 .collect::<Vec<CellIndex>>(),
+            anomaly_energy: 0.0,
+            anomaly_volume: 0.0,
         }
     }
 
-    /// Dynamically compute the location vector for this cell using the given planet and resolution.
     pub fn location(&self, planet: &Planet, res: Option<Resolution>) -> Vec3 {
         let resolution = res.unwrap_or(ASTH_RES);
         let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
-        gc.cell_to_vec3(self.cell)
+        gc.cell_to_vec3(self.id)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planet::EARTH;
+    use crate::constants::{CELL_JOULES_START, EARTH};
     use h3o::Resolution;
-    use crate::asth_constants::CELL_ENERGY_START;
 
     #[test]
     fn test_asthenosphere_cell_init() {
-        // Use the predefined Earth planet constant
         let planet = EARTH.clone();
 
         let mut cell_count = 0;
 
         AsthenosphereCell::initial_cells_for_planet(CellsForPlanetArgs {
             planet: planet.clone(),
-            energy_per_volume: 200.0, // average cell starts with
+            joules_per_km3: 200.0,
             on_cell: |asth_cell| {
-                // Assertions inside the callback
-                assert_eq!(asth_cell.cell.resolution(), Resolution::Two);
+                assert_eq!(asth_cell.id.resolution(), Resolution::Two);
                 assert!(!asth_cell.neighbors.is_empty(), "Cell has no neighbors");
                 assert!(
-                    !asth_cell.neighbors.contains(&asth_cell.cell),
+                    !asth_cell.neighbors.contains(&asth_cell.id),
                     "Cell neighbors include itself"
                 );
                 assert!(asth_cell.volume > 0.0, "Cell volume should be positive");
-                assert!(asth_cell.energy_k > CELL_ENERGY_START/2.0);
+                assert!(asth_cell.energy_j > CELL_JOULES_START / 2.0);
 
                 cell_count += 1;
-                return asth_cell
+                return asth_cell;
             },
-            res: None,
+            res: Resolution::Two,
+            seed: 42
         });
 
         assert_eq!(cell_count, 5882, "wrong cell count");
