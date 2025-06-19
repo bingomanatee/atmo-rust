@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::rc::Rc;
 use uuid::Uuid;
-use crate::asl_leveller::AslMapper;
+use crate::asl_direct_transfer_leveller::level_cells_direct_transfer;
 
 struct AsthChange {
     energy_j: f64,
@@ -52,19 +52,32 @@ pub struct AsthSimLinked {
     store: RockStore,
     vis_freq: u64,
     visualize: bool,
+    debug: bool,
+    png_exporter: Option<PngExporter>, // Reusable PNG exporter with cached spatial grid
 }
 
 impl AsthSimLinked {
     pub fn new(config: ASLParams) -> AsthSimLinked {
         let mut sim = match RockStore::open(&config.store_path) {
-            Ok(store) => AsthSimLinked {
-                cells: HashMap::new(),
-                store,
-                planet: config.planet.clone(),
-                current_step: 0,
-                steps: config.steps,
-                visualize: config.visualize,
-                vis_freq: config.vis_freq,
+            Ok(store) => {
+                // Create PNG exporter once if visualization is enabled
+                let png_exporter = if config.visualize {
+                    Some(PngExporter::new(720, 480, config.planet.clone()))
+                } else {
+                    None
+                };
+
+                AsthSimLinked {
+                    cells: HashMap::new(),
+                    store,
+                    planet: config.planet.clone(),
+                    current_step: 0,
+                    steps: config.steps,
+                    visualize: config.visualize,
+                    vis_freq: config.vis_freq,
+                    debug: config.debug,
+                    png_exporter,
+                }
             },
             Err(e) => {
                 panic!("failed to load store: {:?}", e)
@@ -95,6 +108,11 @@ impl AsthSimLinked {
     }
 
     pub fn run_step(&mut self) {
+        // Create next cells only once at the beginning
+        self.debug_print("  🔄 Creating next cells...");
+        for (_id, cell) in &self.cells {
+            AsthenosphereCellLinked::add(cell);
+        }
         self.debug_print("  📏 Leveling cells...");
         self.level_cells();
 
@@ -116,7 +134,12 @@ impl AsthSimLinked {
         }
     }
 
-    fn export_visualization(&self) {
+    fn export_visualization(&mut self) {
+        // Only export if we have a PNG exporter (visualization enabled)
+        if self.png_exporter.is_none() {
+            return;
+        }
+
         self.debug_print("    📁 Creating output directory...");
         let output_dir = "vis/asth_sim_linked";
         if let Err(_) = fs::create_dir_all(output_dir) {
@@ -139,11 +162,10 @@ impl AsthSimLinked {
             })
             .collect();
 
-        self.debug_print("    🎨 Creating PNG exporter (900x450)...");
-        let mut exporter = PngExporter::new(900, 450, self.planet.clone());
-
-        self.debug_print("    🖌️  Rendering Voronoi image...");
-        let image = exporter.render_voronoi_image_from_cells(&cells_for_export);
+        self.debug_print("    🖌️  Rendering Voronoi image with cached spatial grid...");
+        // Use the reusable PNG exporter with cached spatial grid
+        let image = self.png_exporter.as_mut().unwrap()
+            .render_voronoi_image_from_cells(&cells_for_export);
 
         self.debug_print("    💾 Saving image file...");
         let filename = format!("{}/step_{:04}.png", output_dir, self.current_step);
@@ -157,6 +179,7 @@ impl AsthSimLinked {
     }
 
     fn advance(&mut self) {
+        // Save the current state before advancing
         let cells_to_save: Vec<AsthenosphereCell> = self
             .cells
             .values()
@@ -173,41 +196,49 @@ impl AsthSimLinked {
 
         self.current_step += 1;
 
-        let cell_ids_with_next: Vec<CellIndex> = self
-            .cells
-            .iter()
-            .filter_map(|(&cell_id, current_cell)| {
-                if current_cell.borrow().next.is_some() {
-                    Some(cell_id)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Create a new HashMap to hold the updated cells
+        let mut new_cells = HashMap::new();
 
-        for cell_id in cell_ids_with_next {
-            if let Some(current_cell) = self.cells.get(&cell_id) {
-                let next_cell = {
-                    let current_borrowed = current_cell.borrow();
-                    current_borrowed.next.as_ref().map(|nc| Rc::clone(nc))
+        // For each cell in the current map
+        for (&cell_id, current_cell) in &self.cells {
+            let current_borrowed = current_cell.borrow();
+
+            if let Some(next_cell) = &current_borrowed.next {
+                // If there's a next cell, create a wholly new AsthenosphereCellLinked
+                let mut new_cell_data = next_cell.borrow().cell.clone();
+                new_cell_data.step = self.current_step as u32;
+
+                let new_cell = AsthenosphereCellLinked {
+                    cell: new_cell_data,
+                    next: None,
+                    prev: None,
                 };
 
-                if let Some(next_cell) = next_cell {
-                    next_cell.borrow_mut().cell.step = self.current_step as u32;
-                    next_cell.borrow_mut().unlink_all_prev();
-                    self.cells.insert(cell_id, next_cell.clone());
-                    AsthenosphereCellLinked::add(&next_cell);
+                // Insert the newly created cell
+                new_cells.insert(cell_id, Rc::new(RefCell::new(new_cell)));
+                } else {
+                // If there's no next cell, just clone the current one
+                let mut cloned_cell_data = current_borrowed.cell.clone();
+                cloned_cell_data.step = self.current_step as u32;
+
+                let cloned_cell = AsthenosphereCellLinked {
+                    cell: cloned_cell_data,
+                    next: None,
+                    prev: None
+                };
+
+                new_cells.insert(cell_id, Rc::new(RefCell::new(cloned_cell)));
                 }
             }
-        }
+
+        // Replace the old cells HashMap with the new one
+        self.cells = new_cells;
     }
 
     pub fn cool_cells(&self) {
         let cool_rate =
             (CELL_JOULES_EQUILIBRIUM / CELL_JOULES_START).powf(0.7 / (self.steps as f64));
         for (_id, cell) in &self.cells {
-            AsthenosphereCellLinked::add(cell);
-
             if let Some(next_cell) = &cell.borrow().next {
                 let mut next = next_cell.borrow_mut();
                 next.cell.energy_j *= cool_rate;
@@ -216,10 +247,8 @@ impl AsthSimLinked {
     }
 
     pub fn level_cells(&self) {
-        for (id,_) in &self.cells {
-           let mapper = AslMapper::new(self, id);
-            mapper.level();
-        }
+        // Use direct transfer levelling for perfect conservation
+        level_cells_direct_transfer(&self.cells);
     }
 
     pub fn process_anomalies(&self) {

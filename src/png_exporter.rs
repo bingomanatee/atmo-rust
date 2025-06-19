@@ -1,121 +1,152 @@
 use image::{ImageBuffer, Rgb, RgbImage};
 use std::collections::HashMap;
-use std::path::Path;
 use crate::asthenosphere::AsthenosphereCell;
-use crate::rock_store::RockStore;
-use crate::asthenosphere::ASTH_RES;
 use crate::planet::Planet;
-use crate::constants::{AVG_STARTING_VOLUME_KM_3, CELL_JOULES_START, CELL_JOULES_EQUILIBRIUM};
+use crate::constants::AVG_STARTING_VOLUME_KM_3;
 use h3o::{CellIndex, LatLng};
+use once_cell::sync::Lazy;
+// Energy range constants
+const ENERGY_MIN: f64 = 0.0e24;
+const ENERGY_MAX: f64 = 8.0e24;
+const COLOR_TABLE_SIZE: usize = 1000;
+
 #[derive(Clone, Copy, Debug)]
 struct ColorPoint {
     value: f64,    // normalized energy value between 0.0 and 1.0
     color: Rgb<u8>,
+}
+
+// Precomputed color lookup table - computed once at startup
+static COLOR_LOOKUP_TABLE: Lazy<Vec<Rgb<u8>>> = Lazy::new(|| {
+    let mut color_table = Vec::with_capacity(COLOR_TABLE_SIZE);
+
+    for i in 0..COLOR_TABLE_SIZE {
+        let energy_normalized = i as f64 / (COLOR_TABLE_SIZE - 1) as f64;
+        let color = compute_energy_to_color_static(energy_normalized);
+        color_table.push(color);
+    }
+
+    color_table
+});
+
+// Static version of energy_to_color for use in const context
+fn compute_energy_to_color_static(energy_normalized: f64) -> Rgb<u8> {
+    // Define gradient points (value must be in ascending order)
+    let gradient = [
+        ColorPoint { value: 0.0, color: Rgb([128, 0, 255]) },   // Purple
+        ColorPoint { value: 0.2, color: Rgb([255, 0, 0]) },     // Red
+        ColorPoint { value: 0.4, color: Rgb([255, 150, 0]) },   // Orange
+        ColorPoint { value: 0.6, color: Rgb([255, 255, 0]) },   // Yellow
+        ColorPoint { value: 0.8, color: Rgb([255, 255, 255]) }, // White
+    ];
+
+    // Clamp input
+    let val = if energy_normalized < 0.0 { 0.0 } else if energy_normalized > 1.0 { 1.0 } else { energy_normalized };
+
+    // If val matches exactly a point, return its color
+    for point in &gradient {
+        if (val - point.value).abs() < 1e-8 {
+            return point.color;
+        }
+    }
+
+    // Find two points between which val lies
+    let mut lower = &gradient[0];
+    let mut upper = &gradient[gradient.len() - 1];
+
+    for window in gradient.windows(2) {
+        if val >= window[0].value && val <= window[1].value {
+            lower = &window[0];
+            upper = &window[1];
+            break;
+        }
+    }
+
+    // Compute interpolation factor t in [0,1]
+    let t = (val - lower.value) / (upper.value - lower.value);
+
+    // Interpolate color
+    lerp_color_static(lower.color, upper.color, t)
+}
+
+// Static version of lerp_color
+fn lerp_color_static(c1: Rgb<u8>, c2: Rgb<u8>, t: f64) -> Rgb<u8> {
+    let r = lerp_u8_static(c1[0], c2[0], t);
+    let g = lerp_u8_static(c1[1], c2[1], t);
+    let b = lerp_u8_static(c1[2], c2[2], t);
+    Rgb([r, g, b])
+}
+
+// Static version of lerp_u8
+fn lerp_u8_static(a: u8, b: u8, t: f64) -> u8 {
+    (a as f64 + (b as f64 - a as f64) * t).round() as u8
 }
 pub struct PngExporter {
     width: u32,
     height: u32,
     planet: Planet,
     pixel_to_cell_map: Option<HashMap<(u32, u32), CellIndex>>,
+    spatial_grid: Option<HashMap<(i32, i32), Vec<(CellIndex, f64, f64)>>>,
 }
 
 impl PngExporter {
     pub fn new(width: u32, height: u32, planet: Planet) -> Self {
-        Self { 
-            width, 
-            height, 
+        Self {
+            width,
+            height,
             planet,
             pixel_to_cell_map: None,
+            spatial_grid: None,
         }
     }
 
-    /// Export asthenosphere simulation as PNG images every 10 steps using Voronoi pattern
-    pub fn export_asthenosphere_pngs<P: AsRef<Path>>(
-        &mut self,
-        store: &RockStore,
-        start_step: u32,
-        end_step: u32,
-        step_interval: u32,
-        output_dir: P,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Create output directory if it doesn't exist
-        std::fs::create_dir_all(&output_dir)?;
-        
-        // Generate pixel-to-cell mapping on first run
+
+
+
+
+    fn cell_to_color(&self, cell: &AsthenosphereCell) -> Rgb<u8> {
+        // Expand volume range to capture more variation: 50-150% of AVG_STARTING_VOLUME
+        let volume_min = AVG_STARTING_VOLUME_KM_3 * 0.5;
+        let volume_max = AVG_STARTING_VOLUME_KM_3 * 1.5;
+        let volume_normalized = ((cell.volume - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
+
+        // Use precomputed global color lookup table for fast color retrieval
+        let energy_normalized = ((cell.energy_j - ENERGY_MIN) / (ENERGY_MAX - ENERGY_MIN)).clamp(0.0, 1.0);
+
+        // Fast lookup: convert normalized energy to table index
+        let table_index = (energy_normalized * (COLOR_TABLE_SIZE - 1) as f64).round() as usize;
+        let table_index = table_index.min(COLOR_TABLE_SIZE - 1);
+        let rgb = COLOR_LOOKUP_TABLE[table_index];
+
+        let (red, green, blue) = (rgb.0[0], rgb.0[1], rgb.0[2]);
+
+        // Make low-volume cells much darker - map volume from 0-1 to 0.1-1.0
+        // This creates stronger contrast between high and low volume areas
+        let intensity = 0.1 + (volume_normalized * 0.9);
+
+        Rgb([
+            (red as f64 * intensity) as u8,
+            (green as f64 * intensity) as u8,
+            (blue as f64 * intensity) as u8,
+        ])
+    }
+    
+    /// Render a Voronoi image directly from cell data without needing to read from store
+    pub fn render_voronoi_image_from_cells(&mut self, cells: &[(CellIndex, AsthenosphereCell)]) -> RgbImage {
+        // Generate pixel-to-cell mapping if not already done
         if self.pixel_to_cell_map.is_none() {
             println!("Generating Voronoi pixel-to-cell mapping...");
-            self.generate_pixel_to_cell_map(store, start_step)?;
+            self.generate_pixel_to_cell_map_from_cells(cells);
         }
 
-        let mut step = start_step;
-        while step <= end_step {
-            println!("Rendering step {} as PNG...", step);
-            let cells = self.collect_cells_for_step(store, step)?;
-            let image = self.render_voronoi_image(&cells);
-            
-            let filename = format!("asthenosphere_step_{:04}.png", step);
-            let filepath = output_dir.as_ref().join(filename);
-            image.save(filepath)?;
-            
-            step += step_interval;
-        }
-
-        Ok(())
+        let mut image = self.render_voronoi_image_optimized(cells);
+        self.add_temperature_histogram(&mut image, cells);
+        self.add_color_legend(&mut image);
+        image
     }
 
-    fn generate_pixel_to_cell_map(&mut self, store: &RockStore, step: u32) -> Result<(), Box<dyn std::error::Error>> {
-        let cells = self.collect_cells_for_step(store, step)?;
-        let mut pixel_map = HashMap::new();
-        
-        // Convert all cells to pixel coordinates
-        let cell_positions: Vec<(CellIndex, (i32, i32))> = cells.iter()
-            .map(|(cell_index, _)| (*cell_index, self.cell_to_pixel(*cell_index)))
-            .collect();
-
-        // For each pixel, find the nearest cell using Voronoi logic
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let mut min_distance = f64::MAX;
-                let mut nearest_cell = cell_positions[0].0; // Default to first cell
-                
-                for (cell_index, (cell_x, cell_y)) in &cell_positions {
-                    let dx = x as i32 - cell_x;
-                    let dy = y as i32 - cell_y;
-                    let distance = ((dx * dx + dy * dy) as f64).sqrt();
-                    
-                    if distance < min_distance {
-                        min_distance = distance;
-                        nearest_cell = *cell_index;
-                    }
-                }
-                
-                pixel_map.insert((x, y), nearest_cell);
-            }
-            
-            // Progress indicator
-            if y % 50 == 0 {
-                println!("Mapping progress: {}/{}", y, self.height);
-            }
-        }
-        
-        self.pixel_to_cell_map = Some(pixel_map);
-        println!("Voronoi mapping complete!");
-        Ok(())
-    }
-
-    fn collect_cells_for_step(&self, store: &RockStore, step: u32) -> Result<Vec<(CellIndex, AsthenosphereCell)>, Box<dyn std::error::Error>> {
-        let mut cells = Vec::new();
-        
-        crate::h3_utils::H3Utils::iter_at(ASTH_RES, |cell_index| {
-            if let Ok(Some(cell)) = store.get_asth(cell_index, step) {
-                cells.push((cell_index, cell));
-            }
-        });
-        
-        Ok(cells)
-    }
-
-    fn render_voronoi_image(&self, cells: &[(CellIndex, AsthenosphereCell)]) -> RgbImage {
+    /// Optimized Voronoi image rendering using precomputed pixel-to-cell mapping
+    fn render_voronoi_image_optimized(&self, cells: &[(CellIndex, AsthenosphereCell)]) -> RgbImage {
         let mut img = ImageBuffer::new(self.width, self.height);
 
         // Create a lookup map for quick cell data access
@@ -151,86 +182,48 @@ impl PngExporter {
         img
     }
 
-    fn cell_to_pixel(&self, cell_index: CellIndex) -> (i32, i32) {
-        // Convert H3 cell to lat/lon
-        let lat_lon = LatLng::from(cell_index);
-        let lat = lat_lon.lat_radians();
-        let lon = lat_lon.lng_radians();
-        
-        // Simple equirectangular projection
-        let x = ((lon + std::f64::consts::PI) / (2.0 * std::f64::consts::PI) * self.width as f64) as i32;
-        let y = ((std::f64::consts::PI / 2.0 - lat) / std::f64::consts::PI * self.height as f64) as i32;
-        
-        (x, y)
-    }
-
-    fn cell_to_color(&self, cell: &AsthenosphereCell) -> Rgb<u8> {
-
-        // Expand volume range to capture more variation: 50-150% of AVG_STARTING_VOLUME
-        let volume_min = AVG_STARTING_VOLUME_KM_3 * 0.5;
-        let volume_max = AVG_STARTING_VOLUME_KM_3 * 1.5;
-        let volume_normalized = ((cell.volume - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
-
-        // Energy range from 0 to 8e24 - much wider spectrum for better color distribution
-        let energy_min = 0.0e24;
-        let energy_max = 8.0e24;
-        let energy_normalized = ((cell.energy_j - energy_min) / (energy_max - energy_min)).clamp(0.0, 1.0);
-
-        let rgb = self.energy_to_color(energy_normalized);
-        let (red, green, blue) = (rgb.0[0], rgb.0[1], rgb.0[2]);
-
-        // Make low-volume cells much darker - map volume from 0-1 to 0.1-1.0
-        // This creates stronger contrast between high and low volume areas
-        let intensity = 0.1 + (volume_normalized * 0.9);
-
-        Rgb([
-            (red as f64 * intensity) as u8,
-            (green as f64 * intensity) as u8,
-            (blue as f64 * intensity) as u8,
-        ])
-    }
-    
-    /// Render a Voronoi image directly from cell data without needing to read from store
-    pub fn render_voronoi_image_from_cells(&mut self, cells: &[(CellIndex, AsthenosphereCell)]) -> RgbImage {
-        // Generate pixel-to-cell mapping if not already done
-        if self.pixel_to_cell_map.is_none() {
-            println!("Generating Voronoi pixel-to-cell mapping...");
-            self.generate_pixel_to_cell_map_from_cells(cells);
-        }
-        
-        let mut image = self.render_voronoi_image(cells);
-        self.add_temperature_histogram(&mut image, cells);
-        self.add_color_legend(&mut image);
-        image
-    }
-    
     /// Generate pixel-to-cell mapping from cell data instead of reading from store
     fn generate_pixel_to_cell_map_from_cells(&mut self, cells: &[(CellIndex, AsthenosphereCell)]) {
         println!("      🗺️  Generating mapping for {} pixels and {} cells...", self.width * self.height, cells.len());
-        let mut pixel_map = HashMap::new();
-        
-        // Pre-compute cell positions and organize into spatial grid (10 degree regions)
-        let cell_positions: Vec<(CellIndex, f64, f64)> = cells.iter()
-            .map(|(cell_index, _)| {
-                let cell_lat_lon = LatLng::from(*cell_index);
-                (*cell_index, cell_lat_lon.lat_radians(), cell_lat_lon.lng_radians())
-            })
-            .collect();
-        
-        // Create spatial grid - divide world into 10-degree regions
-        let grid_size = (10.0_f64).to_radians(); // 10 degrees in radians
-        let mut spatial_grid: HashMap<(i32, i32), Vec<(CellIndex, f64, f64)>> = HashMap::new();
-        
-        println!("      📦 Organizing cells into spatial grid...");
-        for (cell_index, lat, lon) in &cell_positions {
-            let grid_lat = (lat / grid_size).floor() as i32;
-            let grid_lon = (lon / grid_size).floor() as i32;
-            spatial_grid.entry((grid_lat, grid_lon))
-                .or_insert_with(Vec::new)
-                .push((*cell_index, *lat, *lon));
-        }
-        
-        println!("      📊 Created spatial grid with {} regions", spatial_grid.len());
+        let mut pixel_map = HashMap::with_capacity((self.width * self.height / 4) as usize); // Pre-allocate for 2x2 blocks
+
+        // Use cached spatial grid or create it if not available
+        let spatial_grid = if let Some(ref grid) = self.spatial_grid {
+            println!("      ♻️  Using cached spatial grid with {} regions", grid.len());
+            grid
+        } else {
+            println!("      📦 Creating and caching spatial grid...");
+
+            // Pre-compute cell positions and organize into spatial grid (5 degree regions for finer granularity)
+            let cell_positions: Vec<(CellIndex, f64, f64)> = cells.iter()
+                .map(|(cell_index, _)| {
+                    let cell_lat_lon = LatLng::from(*cell_index);
+                    (*cell_index, cell_lat_lon.lat_radians(), cell_lat_lon.lng_radians())
+                })
+                .collect();
+
+            // Create spatial grid - divide world into 5-degree regions for better locality
+            let grid_size = (5.0_f64).to_radians(); // 5 degrees in radians (smaller = more efficient)
+            let mut new_spatial_grid: HashMap<(i32, i32), Vec<(CellIndex, f64, f64)>> = HashMap::new();
+
+            for (cell_index, lat, lon) in &cell_positions {
+                let grid_lat = (lat / grid_size).floor() as i32;
+                let grid_lon = (lon / grid_size).floor() as i32;
+                new_spatial_grid.entry((grid_lat, grid_lon))
+                    .or_insert_with(Vec::new)
+                    .push((*cell_index, *lat, *lon));
+            }
+
+            println!("      📊 Created spatial grid with {} regions (avg {:.1} cells/region)",
+                    new_spatial_grid.len(),
+                    cells.len() as f64 / new_spatial_grid.len() as f64);
+
+            // Cache the spatial grid for future use
+            self.spatial_grid = Some(new_spatial_grid);
+            self.spatial_grid.as_ref().unwrap()
+        };
+
+        let grid_size = (5.0_f64).to_radians(); // Must match the grid size used above
         
         let total_pixels = self.width * self.height;
         let mut processed = 0;
@@ -240,7 +233,7 @@ impl PngExporter {
             for x in (0..self.width).step_by(2) {
                 let mut closest_cell = None;
                 let mut min_distance = f64::INFINITY;
-                
+
                 // Convert pixel to approximate lat/lon (use center of 2x2 block)
                 let lon = ((x + 1) as f64 / self.width as f64) * 2.0 * std::f64::consts::PI - std::f64::consts::PI;
                 let lat = std::f64::consts::PI / 2.0 - ((y + 1) as f64 / self.height as f64) * std::f64::consts::PI;
@@ -248,27 +241,58 @@ impl PngExporter {
                 // Find which grid region this pixel is in
                 let pixel_grid_lat = (lat / grid_size).floor() as i32;
                 let pixel_grid_lon = (lon / grid_size).floor() as i32;
-                
-                // Check current region and neighboring regions (+/- 1 in each direction)
-                for grid_lat_offset in -1..=1 {
-                    for grid_lon_offset in -1..=1 {
-                        let check_grid_lat = pixel_grid_lat + grid_lat_offset;
-                        let check_grid_lon = pixel_grid_lon + grid_lon_offset;
-                        
-                        if let Some(region_cells) = spatial_grid.get(&(check_grid_lat, check_grid_lon)) {
-                            // Only check cells in this nearby region
-                            for (cell_index, cell_lat, cell_lon) in region_cells {
-                                let distance = ((lat - cell_lat).powi(2) + (lon - cell_lon).powi(2)).sqrt();
-                                
-                                if distance < min_distance {
-                                    min_distance = distance;
-                                    closest_cell = Some(*cell_index);
+
+                // Check current region first (most likely to contain closest cell)
+                if let Some(region_cells) = spatial_grid.get(&(pixel_grid_lat, pixel_grid_lon)) {
+                    for (cell_index, cell_lat, cell_lon) in region_cells {
+                        // Use squared distance to avoid expensive sqrt() calls
+                        let distance_squared = (lat - cell_lat).powi(2) + (lon - cell_lon).powi(2);
+
+                        if distance_squared < min_distance * min_distance {
+                            min_distance = distance_squared.sqrt();
+                            closest_cell = Some(*cell_index);
+                        }
+                    }
+                }
+
+                // Only check neighboring regions if we haven't found a very close cell
+                let search_threshold = (2.0_f64).to_radians(); // ~2 degrees
+                if min_distance > search_threshold {
+                    // Check neighboring regions (+/- 1 in each direction)
+                    for grid_lat_offset in -1..=1 {
+                        for grid_lon_offset in -1..=1 {
+                            if grid_lat_offset == 0 && grid_lon_offset == 0 { continue; } // Skip center (already checked)
+
+                            let check_grid_lat = pixel_grid_lat + grid_lat_offset;
+                            let check_grid_lon = pixel_grid_lon + grid_lon_offset;
+
+                            if let Some(region_cells) = spatial_grid.get(&(check_grid_lat, check_grid_lon)) {
+                                for (cell_index, cell_lat, cell_lon) in region_cells {
+                                    let distance_squared = (lat - cell_lat).powi(2) + (lon - cell_lon).powi(2);
+
+                                    if distance_squared < min_distance * min_distance {
+                                        min_distance = distance_squared.sqrt();
+                                        closest_cell = Some(*cell_index);
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 
+                // Fallback: if no cell found in spatial grid, search all regions
+                if closest_cell.is_none() {
+                    for region_cells in spatial_grid.values() {
+                        for (cell_index, cell_lat, cell_lon) in region_cells {
+                            let distance_squared = (lat - cell_lat).powi(2) + (lon - cell_lon).powi(2);
+                            if distance_squared < min_distance * min_distance {
+                                min_distance = distance_squared.sqrt();
+                                closest_cell = Some(*cell_index);
+                            }
+                        }
+                    }
+                }
+
                 // Apply the same cell to all 4 pixels in the 2x2 block
                 if let Some(cell_index) = closest_cell {
                     for block_y in y..=(y + 1).min(self.height - 1) {
@@ -277,7 +301,7 @@ impl PngExporter {
                         }
                     }
                 }
-                
+
                 processed += 4;
                 if processed % 120000 == 0 {
                     println!("      📊 Mapping progress: {}/{} pixels ({:.1}%)", processed, total_pixels, (processed as f64 / total_pixels as f64) * 100.0);
@@ -302,25 +326,38 @@ impl PngExporter {
         let chart_height = hist_height - (2 * padding);
         
         // No background - keep transparent/existing image background
+        // No border - clean histogram appearance
         
-        // Draw black border around histogram area
-        for x in chart_x..(chart_x + chart_width) {
-            image.put_pixel(x, chart_y, Rgb([0, 0, 0])); // Top border
-            image.put_pixel(x, chart_y + chart_height - 1, Rgb([0, 0, 0])); // Bottom border
-        }
-        for y in chart_y..(chart_y + chart_height) {
-            image.put_pixel(chart_x, y, Rgb([0, 0, 0])); // Left border
-            image.put_pixel(chart_x + chart_width - 1, y, Rgb([0, 0, 0])); // Right border
-        }
-        
-        // Use wider range for better distribution visualization (0-8e+24)
-        let temp_min = 0.0e24;
-        let temp_max = 8.0e24;
+        // Use wider range for better distribution visualization
+        let temp_min = ENERGY_MIN;
+        let temp_max = ENERGY_MAX;
         let temp_range = temp_max - temp_min;
         
         // Calculate mean energy for display
         let total_energy: f64 = cells.iter().map(|(_, cell)| cell.energy_j).sum();
         let mean_energy = total_energy / cells.len() as f64;
+
+        // Calculate standard deviations for volume and energy
+        let total_volume: f64 = cells.iter().map(|(_, cell)| cell.volume).sum();
+        let mean_volume = total_volume / cells.len() as f64;
+
+        // Calculate standard deviation for volume
+        let volume_variance: f64 = cells.iter()
+            .map(|(_, cell)| {
+                let diff = cell.volume - mean_volume;
+                diff * diff
+            })
+            .sum::<f64>() / cells.len() as f64;
+        let std_volume = volume_variance.sqrt();
+
+        // Calculate standard deviation for energy
+        let energy_variance: f64 = cells.iter()
+            .map(|(_, cell)| {
+                let diff = cell.energy_j - mean_energy;
+                diff * diff
+            })
+            .sum::<f64>() / cells.len() as f64;
+        let std_energy = energy_variance.sqrt();
         
         // Count cells in 100 temperature bins for higher resolution
         let mut bins = [0u32; 100];
@@ -345,8 +382,12 @@ impl PngExporter {
             
             // Calculate color for this temperature bin using the wide energy range
             let temp_value = temp_min + (i as f64 + 0.5) / 100.0 * temp_range;
-            let energy_normalized = ((temp_value - 0.0e24) / (8.0e24 - 0.0e24)).clamp(0.0, 1.0);
-            let bar_color = self.energy_to_color(energy_normalized);
+            let energy_normalized = ((temp_value - ENERGY_MIN) / (ENERGY_MAX - ENERGY_MIN)).clamp(0.0, 1.0);
+
+            // Fast lookup using precomputed global table
+            let table_index = (energy_normalized * (COLOR_TABLE_SIZE - 1) as f64).round() as usize;
+            let table_index = table_index.min(COLOR_TABLE_SIZE - 1);
+            let bar_color = COLOR_LOOKUP_TABLE[table_index];
             
             // Draw thin vertical line
             for x in bar_x..(bar_x + line_width).min(self.width) {
@@ -356,17 +397,28 @@ impl PngExporter {
             }
         }
         
-        // Add text showing mean energy (simple bitmap text)
-        let text_y = chart_y + chart_height + 10;
+        // Add text showing mean energy (simple bitmap text) - 2x bigger, moved up to avoid clipping
+        let text_y = chart_y + chart_height - 25; // Move up into the chart area
         let mean_text = format!("Mean Energy: {:.2e} J", mean_energy);
-        self.draw_simple_text(image, &mean_text, 10, text_y);
+        self.draw_simple_text_2x(image, &mean_text, 10, text_y);
+
+        // Add standard deviation statistics in the right corner - 2x bigger
+        let std_text_x = self.width - 300; // Position from right edge
+        let std_volume_y = 20; // Top right corner
+        let std_energy_y = std_volume_y + 20; // Below std volume
+
+        let std_volume_text = format!("Std Volume: {:.2e} km3", std_volume);
+        let std_energy_text = format!("Std Energy: {:.2e} J", std_energy);
+
+        self.draw_simple_text_2x(image, &std_volume_text, std_text_x, std_volume_y);
+        self.draw_simple_text_2x(image, &std_energy_text, std_text_x, std_energy_y);
     }
     
     /// Draw simple bitmap text (basic implementation)
     fn draw_simple_text(&self, image: &mut RgbImage, text: &str, start_x: u32, start_y: u32) {
         // Simple 3x5 pixel font for basic characters
         let font_map = self.get_simple_font_map();
-        
+
         let mut current_x = start_x;
         for ch in text.chars() {
             if let Some(bitmap) = font_map.get(&ch) {
@@ -384,6 +436,37 @@ impl PngExporter {
                 current_x += 6; // Character width + spacing
             } else {
                 current_x += 3; // Space for unknown characters
+            }
+        }
+    }
+
+    /// Draw simple bitmap text at 2x size (double resolution)
+    fn draw_simple_text_2x(&self, image: &mut RgbImage, text: &str, start_x: u32, start_y: u32) {
+        // Simple 3x5 pixel font for basic characters, rendered at 2x scale
+        let font_map = self.get_simple_font_map();
+
+        let mut current_x = start_x;
+        for ch in text.chars() {
+            if let Some(bitmap) = font_map.get(&ch) {
+                for (row, &byte) in bitmap.iter().enumerate() {
+                    for col in 0..8 {
+                        if byte & (1 << (7 - col)) != 0 {
+                            // Draw 2x2 pixel block for each original pixel
+                            for dy in 0..2 {
+                                for dx in 0..2 {
+                                    let x = current_x + (col * 2) + dx;
+                                    let y = start_y + (row as u32 * 2) + dy;
+                                    if x < self.width && y < self.height {
+                                        image.put_pixel(x, y, Rgb([0, 0, 0])); // Black text
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                current_x += 12; // Character width + spacing (2x original)
+            } else {
+                current_x += 6; // Space for unknown characters (2x original)
             }
         }
     }
@@ -444,97 +527,40 @@ impl PngExporter {
         // Draw color gradient from top (hot) to bottom (cold)
         for i in 0..legend_height {
             let energy_normalized = 1.0 - (i as f64 / legend_height as f64); // Top = hot (1.0), bottom = cold (0.0)
-            let color = self.energy_to_color(energy_normalized);
-            
+
+            // Fast lookup using precomputed global table
+            let table_index = (energy_normalized * (COLOR_TABLE_SIZE - 1) as f64).round() as usize;
+            let table_index = table_index.min(COLOR_TABLE_SIZE - 1);
+            let color = COLOR_LOOKUP_TABLE[table_index];
+
             // Draw color bar (leave 2px margin on each side)
             for x in (legend_x + 2)..(legend_x + legend_width - 2) {
                 let y = legend_y + i;
                 image.put_pixel(x, y, color);
             }
         }
+
+        // No border - clean legend appearance
         
-        // Draw black border around legend
-        for x in legend_x..(legend_x + legend_width) {
-            image.put_pixel(x, legend_y, Rgb([0, 0, 0])); // Top
-            image.put_pixel(x, legend_y + legend_height - 1, Rgb([0, 0, 0])); // Bottom
-        }
-        for y in legend_y..(legend_y + legend_height) {
-            image.put_pixel(legend_x, y, Rgb([0, 0, 0])); // Left
-            image.put_pixel(legend_x + legend_width - 1, y, Rgb([0, 0, 0])); // Right
-        }
-        
-        // Add temperature labels showing energy ranges for each color region
-        let hot_y = legend_y - 8;
-        let cold_y = legend_y + legend_height + 2;
-        
-        // Top label (hottest)
-        self.draw_simple_text(image, "8e24", legend_x - 10, hot_y);
-        
-        // Intermediate labels for color transitions
+        // Add temperature labels showing energy ranges for each color region - 2x bigger and on left side
+        let hot_y = legend_y - 16; // More space for 2x text
+        let cold_y = legend_y + legend_height + 4; // More space for 2x text
+
+        // Top label (hottest) - moved to left side and 2x bigger
+        self.draw_simple_text_2x(image, "8e24", legend_x - 50, hot_y);
+
+        // Intermediate labels for color transitions - moved to left side and 2x bigger
         let white_yellow_y = legend_y + (legend_height as f64 * 0.2) as u32; // 0.8 normalized = 6.4e24
-        let yellow_orange_y = legend_y + (legend_height as f64 * 0.4) as u32; // 0.6 normalized = 4.8e24  
+        let yellow_orange_y = legend_y + (legend_height as f64 * 0.4) as u32; // 0.6 normalized = 4.8e24
         let orange_red_y = legend_y + (legend_height as f64 * 0.6) as u32;   // 0.4 normalized = 3.2e24
         let red_purple_y = legend_y + (legend_height as f64 * 0.8) as u32;   // 0.2 normalized = 1.6e24
-        
-        self.draw_simple_text(image, "6.4", legend_x + legend_width + 2, white_yellow_y);
-        self.draw_simple_text(image, "4.8", legend_x + legend_width + 2, yellow_orange_y);  
-        self.draw_simple_text(image, "3.2", legend_x + legend_width + 2, orange_red_y);
-        self.draw_simple_text(image, "1.6", legend_x + legend_width + 2, red_purple_y);
-        
-        // Bottom label (coldest)
-        self.draw_simple_text(image, "0e24", legend_x - 10, cold_y);
-    }
-    fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
-        (a as f64 + (b as f64 - a as f64) * t).round() as u8
-    }
-    /// Extract color calculation for reuse in histogram
-    /// Linear interpolation between two colors
-    fn lerp_color(c1: Rgb<u8>, c2: Rgb<u8>, t: f64) -> Rgb<u8> {
-        let r = Self::lerp_u8(c1[0], c2[0], t);
-        let g = Self::lerp_u8(c1[1], c2[1], t);
-        let b = Self::lerp_u8(c1[2], c2[2], t);
-        Rgb([r, g, b])
-    }
 
-    /// Map normalized energy value [0.0, 1.0] to color by interpolating between defined color points
-    fn energy_to_color(&self, energy_normalized: f64) -> Rgb<u8> {
-        // Define gradient points (value must be in ascending order)
-        // You can adjust these colors as you like
-        let gradient = [
-            ColorPoint { value: 0.0, color: Rgb([128, 0, 255]) },   // Purple
-            ColorPoint { value: 0.2, color: Rgb([255, 0, 0]) },     // Red
-            ColorPoint { value: 0.4, color: Rgb([255, 150, 0]) },   // Orange
-            ColorPoint { value: 0.6, color: Rgb([255, 255, 0]) },   // Yellow
-            ColorPoint { value: 0.8, color: Rgb([255, 255, 255]) }, // White
-            // Optionally add more points for smoother gradient
-        ];
+        self.draw_simple_text_2x(image, "6.4", legend_x - 40, white_yellow_y);
+        self.draw_simple_text_2x(image, "4.8", legend_x - 40, yellow_orange_y);
+        self.draw_simple_text_2x(image, "3.2", legend_x - 40, orange_red_y);
+        self.draw_simple_text_2x(image, "1.6", legend_x - 40, red_purple_y);
 
-        // Clamp input
-        let val = energy_normalized.clamp(0.0, 1.0);
-
-        // If val matches exactly a point, return its color
-        for point in &gradient {
-            if (val - point.value).abs() < 1e-8 {
-                return point.color;
-            }
-        }
-
-        // Find two points between which val lies
-        let mut lower = &gradient[0];
-        let mut upper = &gradient[gradient.len() - 1];
-
-        for window in gradient.windows(2) {
-            if val >= window[0].value && val <= window[1].value {
-                lower = &window[0];
-                upper = &window[1];
-                break;
-            }
-        }
-
-        // Compute interpolation factor t in [0,1]
-        let t = (val - lower.value) / (upper.value - lower.value);
-
-        // Interpolate color
-        Self::lerp_color(lower.color, upper.color, t)
+        // Bottom label (coldest) - moved to left side and 2x bigger
+        self.draw_simple_text_2x(image, "0e24", legend_x - 50, cold_y);
     }
 }
