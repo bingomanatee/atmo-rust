@@ -22,11 +22,11 @@ pub const AVG_VOLUME_TO_ADD: f64 = 0.0325;
 pub const LEVEL_AMT: f64 = 0.1; // Percentage for volume levelling between cells
 pub const STANDARD_STEPS: u32 = 500;
 
-// Anomaly (flow) constants
+// Anomaly (flow) constants - reduced magnitude to not overwhelm cooling
 pub const ANOMALY_SPAWN_CHANCE: f64 = 0.15; // 15% chance per cycle
 pub const ANOMALY_DECAY_RATE: f64 = 0.03; // 3% decay per step
-pub const ANOMALY_ENERGY_AMOUNT: f64 = CELL_JOULES_START * 0.2; // 20% of starting energy
-pub const ANOMALY_VOLUME_AMOUNT: f64 = AVG_STARTING_VOLUME_KM_3 * 0.1; // 10% of starting volume
+pub const ANOMALY_ENERGY_AMOUNT: f64 = CELL_JOULES_START * 0.02; // 2% of starting energy (was 20%)
+pub const ANOMALY_VOLUME_AMOUNT: f64 = AVG_STARTING_VOLUME_KM_3 * 0.01; // 1% of starting volume (was 10%)
 
 pub const EARTH_RADIUS_KM: i32 = 6372;
 pub const RHO_EARTH: f64 = 4.5; // g/cm³

@@ -1,6 +1,5 @@
 pub mod sim;
 mod planet;
-mod plate;
 mod plate_generator;
 mod vary;
 mod rock_store;
@@ -10,7 +9,6 @@ mod h3_utils;
 mod geoconverter;
 mod thermal_plate_generator;
 mod asthenosphere;
-mod asth_sim;
 mod steps;
 pub mod constants;
 pub mod gif_exporter;

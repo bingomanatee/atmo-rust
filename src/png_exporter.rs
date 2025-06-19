@@ -167,30 +167,13 @@ impl PngExporter {
         let volume_max = AVG_STARTING_VOLUME_KM_3 * 1.5;
         let volume_normalized = ((cell.volume - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
 
-        // Energy range from 5.0e24 (cold/blue) to 5.8e24 (hot/red)
-        let energy_min = 5.0e24;
-        let energy_max = 5.8e24;
+        // Energy range from 0 to 8e24 - much wider spectrum for better color distribution
+        let energy_min = 0.0e24;
+        let energy_max = 8.0e24;
         let energy_normalized = ((cell.energy_j - energy_min) / (energy_max - energy_min)).clamp(0.0, 1.0);
 
-        // Color gradient: white -> yellow -> red -> purple -> black
-        let (red, green, blue) = if energy_normalized >= 0.75 {
-            // White to yellow (hottest: 0.75-1.0)
-            let t = (energy_normalized - 0.75) / 0.25;
-            let intensity = 255.0 * (0.5 + t * 0.5); // 50% to 100% intensity
-            (intensity as u8, intensity as u8, (255.0 * (1.0 - t)) as u8)
-        } else if energy_normalized >= 0.5 {
-            // Yellow to red (hot: 0.5-0.75) 
-            let t = (energy_normalized - 0.5) / 0.25;
-            (255, (255.0 * (1.0 - t)) as u8, 0)
-        } else if energy_normalized >= 0.25 {
-            // Red to purple (cool: 0.25-0.5)
-            let t = (energy_normalized - 0.25) / 0.25;
-            (255, 0, (255.0 * t) as u8)
-        } else {
-            // Purple to black (coldest: 0.0-0.25)
-            let t = energy_normalized / 0.25;
-            ((128.0 * t) as u8, 0, (255.0 * t) as u8)
-        };
+        let rgb = self.energy_to_color(energy_normalized);
+        let (red, green, blue) = (rgb.0[0], rgb.0[1], rgb.0[2]);
 
         // Make low-volume cells much darker - map volume from 0-1 to 0.1-1.0
         // This creates stronger contrast between high and low volume areas
@@ -211,7 +194,10 @@ impl PngExporter {
             self.generate_pixel_to_cell_map_from_cells(cells);
         }
         
-        self.render_voronoi_image(cells)
+        let mut image = self.render_voronoi_image(cells);
+        self.add_temperature_histogram(&mut image, cells);
+        self.add_color_legend(&mut image);
+        image
     }
     
     /// Generate pixel-to-cell mapping from cell data instead of reading from store
@@ -297,5 +283,241 @@ impl PngExporter {
         
         self.pixel_to_cell_map = Some(pixel_map);
         println!("      ✅ Voronoi mapping complete!");
+    }
+    
+    /// Add a temperature distribution histogram to the bottom half of the image
+    fn add_temperature_histogram(&self, image: &mut RgbImage, cells: &[(CellIndex, AsthenosphereCell)]) {
+        let hist_height = self.height / 2;
+        let hist_start_y = self.height - hist_height;
+        let padding = 20;
+        
+        // Make graph only 1/3 as wide as total image, centered
+        let chart_width = self.width / 3;
+        let chart_x = (self.width - chart_width) / 2; // Center horizontally
+        let chart_y = hist_start_y + padding;
+        let chart_height = hist_height - (2 * padding);
+        
+        // No background - keep transparent/existing image background
+        
+        // Draw black border around histogram area
+        for x in chart_x..(chart_x + chart_width) {
+            image.put_pixel(x, chart_y, Rgb([0, 0, 0])); // Top border
+            image.put_pixel(x, chart_y + chart_height - 1, Rgb([0, 0, 0])); // Bottom border
+        }
+        for y in chart_y..(chart_y + chart_height) {
+            image.put_pixel(chart_x, y, Rgb([0, 0, 0])); // Left border
+            image.put_pixel(chart_x + chart_width - 1, y, Rgb([0, 0, 0])); // Right border
+        }
+        
+        // Use wider range for better distribution visualization (0-8e+24)
+        let temp_min = 0.0e24;
+        let temp_max = 8.0e24;
+        let temp_range = temp_max - temp_min;
+        
+        // Calculate mean energy for display
+        let total_energy: f64 = cells.iter().map(|(_, cell)| cell.energy_j).sum();
+        let mean_energy = total_energy / cells.len() as f64;
+        
+        // Count cells in 100 temperature bins for higher resolution
+        let mut bins = [0u32; 100];
+        for (_, cell) in cells {
+            let bin_index = ((cell.energy_j - temp_min) / temp_range * 100.0).floor() as usize;
+            let bin_index = bin_index.min(99); // Clamp to valid range
+            bins[bin_index] += 1;
+        }
+        
+        // Find max count for scaling
+        let max_count = *bins.iter().max().unwrap_or(&1);
+        if max_count == 0 { return; }
+        
+        // Draw thin line bars (2% width)
+        let line_width = (chart_width as f32 * 0.02) as u32; // 2% of chart width
+        for (i, &count) in bins.iter().enumerate() {
+            if count == 0 { continue; }
+            
+            let bar_height = (count as f32 / max_count as f32 * (chart_height - 20) as f32) as u32;
+            let bar_x = chart_x + (i as f32 / 100.0 * chart_width as f32) as u32;
+            let bar_start_y = chart_y + chart_height - bar_height - 10;
+            
+            // Calculate color for this temperature bin using the wide energy range
+            let temp_value = temp_min + (i as f64 + 0.5) / 100.0 * temp_range;
+            let energy_normalized = ((temp_value - 0.0e24) / (8.0e24 - 0.0e24)).clamp(0.0, 1.0);
+            let bar_color = self.energy_to_color(energy_normalized);
+            
+            // Draw thin vertical line
+            for x in bar_x..(bar_x + line_width).min(self.width) {
+                for y in bar_start_y..(bar_start_y + bar_height).min(self.height) {
+                    image.put_pixel(x, y, bar_color);
+                }
+            }
+        }
+        
+        // Add text showing mean energy (simple bitmap text)
+        let text_y = chart_y + chart_height + 10;
+        let mean_text = format!("Mean Energy: {:.2e} J", mean_energy);
+        self.draw_simple_text(image, &mean_text, 10, text_y);
+    }
+    
+    /// Draw simple bitmap text (basic implementation)
+    fn draw_simple_text(&self, image: &mut RgbImage, text: &str, start_x: u32, start_y: u32) {
+        // Simple 3x5 pixel font for basic characters
+        let font_map = self.get_simple_font_map();
+        
+        let mut current_x = start_x;
+        for ch in text.chars() {
+            if let Some(bitmap) = font_map.get(&ch) {
+                for (row, &byte) in bitmap.iter().enumerate() {
+                    for col in 0..8 {
+                        if byte & (1 << (7 - col)) != 0 {
+                            let x = current_x + col;
+                            let y = start_y + row as u32;
+                            if x < self.width && y < self.height {
+                                image.put_pixel(x, y, Rgb([0, 0, 0])); // Black text
+                            }
+                        }
+                    }
+                }
+                current_x += 6; // Character width + spacing
+            } else {
+                current_x += 3; // Space for unknown characters
+            }
+        }
+    }
+    
+    /// Get a simple bitmap font (very basic)
+    fn get_simple_font_map(&self) -> std::collections::HashMap<char, [u8; 8]> {
+        let mut font = std::collections::HashMap::new();
+        
+        // Simple 8x8 bitmaps for essential characters
+        font.insert('M', [0x00, 0x7C, 0x82, 0x82, 0x92, 0x82, 0x82, 0x00]);
+        font.insert('e', [0x00, 0x00, 0x3C, 0x42, 0x7E, 0x40, 0x3C, 0x00]);
+        font.insert('a', [0x00, 0x00, 0x3C, 0x02, 0x3E, 0x42, 0x3E, 0x00]);
+        font.insert('n', [0x00, 0x00, 0x5C, 0x62, 0x42, 0x42, 0x42, 0x00]);
+        font.insert(' ', [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        font.insert('E', [0x00, 0x7E, 0x40, 0x40, 0x7C, 0x40, 0x7E, 0x00]);
+        font.insert('r', [0x00, 0x00, 0x5C, 0x62, 0x40, 0x40, 0x40, 0x00]);
+        font.insert('g', [0x00, 0x00, 0x3E, 0x42, 0x42, 0x3E, 0x02, 0x3C]);
+        font.insert('y', [0x00, 0x00, 0x42, 0x42, 0x42, 0x3E, 0x02, 0x3C]);
+        font.insert(':', [0x00, 0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00]);
+        font.insert('J', [0x00, 0x0E, 0x04, 0x04, 0x04, 0x44, 0x38, 0x00]);
+        font.insert('o', [0x00, 0x00, 0x3C, 0x42, 0x42, 0x42, 0x3C, 0x00]);
+        font.insert('u', [0x00, 0x00, 0x42, 0x42, 0x42, 0x46, 0x3A, 0x00]);
+        font.insert('l', [0x00, 0x60, 0x20, 0x20, 0x20, 0x20, 0x70, 0x00]);
+        font.insert('s', [0x00, 0x00, 0x3C, 0x40, 0x38, 0x04, 0x78, 0x00]);
+        font.insert('.', [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00]);
+        font.insert('+', [0x00, 0x00, 0x10, 0x10, 0x7C, 0x10, 0x10, 0x00]);
+        font.insert('-', [0x00, 0x00, 0x00, 0x00, 0x7C, 0x00, 0x00, 0x00]);
+        
+        // Numbers
+        font.insert('0', [0x00, 0x3C, 0x46, 0x4A, 0x52, 0x62, 0x3C, 0x00]);
+        font.insert('1', [0x00, 0x18, 0x28, 0x08, 0x08, 0x08, 0x3E, 0x00]);
+        font.insert('2', [0x00, 0x3C, 0x42, 0x02, 0x3C, 0x40, 0x7E, 0x00]);
+        font.insert('3', [0x00, 0x3C, 0x42, 0x0C, 0x02, 0x42, 0x3C, 0x00]);
+        font.insert('4', [0x00, 0x08, 0x18, 0x28, 0x48, 0x7E, 0x08, 0x00]);
+        font.insert('5', [0x00, 0x7E, 0x40, 0x7C, 0x02, 0x42, 0x3C, 0x00]);
+        font.insert('6', [0x00, 0x3C, 0x40, 0x7C, 0x42, 0x42, 0x3C, 0x00]);
+        font.insert('7', [0x00, 0x7E, 0x02, 0x04, 0x08, 0x10, 0x10, 0x00]);
+        font.insert('8', [0x00, 0x3C, 0x42, 0x3C, 0x42, 0x42, 0x3C, 0x00]);
+        font.insert('9', [0x00, 0x3C, 0x42, 0x42, 0x3E, 0x02, 0x3C, 0x00]);
+        
+        font
+    }
+    
+    /// Add a small color legend on the right side
+    fn add_color_legend(&self, image: &mut RgbImage) {
+        let legend_width = 30;
+        let legend_height = 200;
+        let legend_x = self.width - legend_width - 10; // 10px from right edge
+        let legend_y = 20; // 20px from top
+        
+        // Draw legend background (light gray)
+        for x in legend_x..(legend_x + legend_width) {
+            for y in legend_y..(legend_y + legend_height) {
+                image.put_pixel(x, y, Rgb([220, 220, 220]));
+            }
+        }
+        
+        // Draw color gradient from top (hot) to bottom (cold)
+        for i in 0..legend_height {
+            let energy_normalized = 1.0 - (i as f64 / legend_height as f64); // Top = hot (1.0), bottom = cold (0.0)
+            let color = self.energy_to_color(energy_normalized);
+            
+            // Draw color bar (leave 2px margin on each side)
+            for x in (legend_x + 2)..(legend_x + legend_width - 2) {
+                let y = legend_y + i;
+                image.put_pixel(x, y, color);
+            }
+        }
+        
+        // Draw black border around legend
+        for x in legend_x..(legend_x + legend_width) {
+            image.put_pixel(x, legend_y, Rgb([0, 0, 0])); // Top
+            image.put_pixel(x, legend_y + legend_height - 1, Rgb([0, 0, 0])); // Bottom
+        }
+        for y in legend_y..(legend_y + legend_height) {
+            image.put_pixel(legend_x, y, Rgb([0, 0, 0])); // Left
+            image.put_pixel(legend_x + legend_width - 1, y, Rgb([0, 0, 0])); // Right
+        }
+        
+        // Add temperature labels showing energy ranges for each color region
+        let hot_y = legend_y - 8;
+        let cold_y = legend_y + legend_height + 2;
+        
+        // Top label (hottest)
+        self.draw_simple_text(image, "8e24", legend_x - 10, hot_y);
+        
+        // Intermediate labels for color transitions
+        let white_yellow_y = legend_y + (legend_height as f64 * 0.2) as u32; // 0.8 normalized = 6.4e24
+        let yellow_orange_y = legend_y + (legend_height as f64 * 0.4) as u32; // 0.6 normalized = 4.8e24  
+        let orange_red_y = legend_y + (legend_height as f64 * 0.6) as u32;   // 0.4 normalized = 3.2e24
+        let red_purple_y = legend_y + (legend_height as f64 * 0.8) as u32;   // 0.2 normalized = 1.6e24
+        
+        self.draw_simple_text(image, "6.4", legend_x + legend_width + 2, white_yellow_y);
+        self.draw_simple_text(image, "4.8", legend_x + legend_width + 2, yellow_orange_y);  
+        self.draw_simple_text(image, "3.2", legend_x + legend_width + 2, orange_red_y);
+        self.draw_simple_text(image, "1.6", legend_x + legend_width + 2, red_purple_y);
+        
+        // Bottom label (coldest)
+        self.draw_simple_text(image, "0e24", legend_x - 10, cold_y);
+    }
+    
+    /// Extract color calculation for reuse in histogram
+    fn energy_to_color(&self, energy_normalized: f64) -> Rgb<u8> {
+        let (red, green, blue) = if energy_normalized >= 0.8 {
+            // White (hottest: 0.8-1.0) - smooth transition to pure white
+            let t = (energy_normalized - 0.8) / 0.2;
+            let intensity = 200.0 + (55.0 * t); // Goes from light gray to white
+            (intensity as u8, intensity as u8, intensity as u8)
+        } else if energy_normalized >= 0.6 {
+            // Yellow to Light Gray (hot: 0.6-0.8) 
+            let t = (energy_normalized - 0.6) / 0.2;
+            let red_val = 255.0;
+            let green_val = 255.0; 
+            let blue_val = 100.0 + (100.0 * t); // Yellow (100) to light gray (200)
+            (red_val as u8, green_val as u8, blue_val as u8)
+        } else if energy_normalized >= 0.4 {
+            // Orange to Yellow (warm: 0.4-0.6)
+            let t = (energy_normalized - 0.4) / 0.2;
+            let red_val = 255.0;
+            let green_val = 150.0 + (105.0 * t); // Orange (150) to Yellow (255)
+            let blue_val = 0.0 + (100.0 * t); // Orange (0) to Yellow (100)
+            (red_val as u8, green_val as u8, blue_val as u8)
+        } else if energy_normalized >= 0.2 {
+            // Red to Orange (medium: 0.2-0.4)
+            let t = (energy_normalized - 0.2) / 0.2;
+            let red_val = 255.0;
+            let green_val = 0.0 + (150.0 * t); // Red (0) to Orange (150)
+            let blue_val = 0.0;
+            (red_val as u8, green_val as u8, blue_val as u8)
+        } else {
+            // Purple to Red (coldest: 0.0-0.2)
+            let t = energy_normalized / 0.2;
+            let red_val = 128.0 + (127.0 * t); // Purple (128) to Red (255)
+            let green_val = 0.0;
+            let blue_val = 255.0 * (1.0 - t); // Purple (255) to Red (0)
+            (red_val as u8, green_val as u8, blue_val as u8)
+        };
+        
+        Rgb([red, green, blue])
     }
 }

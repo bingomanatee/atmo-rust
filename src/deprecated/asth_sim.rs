@@ -2,7 +2,7 @@ use crate::constants::{AVG_STARTING_VOLUME_KM_3, CELL_JOULES_START, JOULES_PER_K
 use crate::asthenosphere::{ASTH_RES, AsthenosphereCell, CellsForPlanetArgs};
 use crate::h3_utils::H3Utils;
 use crate::planet::Planet;
-use crate::plate::PLATE_RESOLUTION;
+use crate::deprecated::plate::PLATE_RESOLUTION;
 use crate::rock_store::RockStore;
 use h3o::{CellIndex, Resolution};
 use rand::Rng;

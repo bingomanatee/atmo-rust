@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use crate::helpers::{rad_to_area_int, sample_power_law};
 use crate::planet::Planet;
-use crate::plate::{Plate, PlateParams};
+use crate::deprecated::plate::{Plate, PlateParams};
 use crate::vary::vary_within_range;
 use glam::Vec3;
 use rand::Rng;

@@ -1,5 +1,5 @@
 use crate::planet::{Planet, PlanetParams};
-use crate::plate::Plate;
+use crate::deprecated::plate::Plate;
 use crate::plate_generator::{GenerateRadiiParams, PartialPlateGenConfig, PlateGenerator};
 use crate::rock_store::RockStore;
 use crate::sim::{Sim, SimPlanetParams};
