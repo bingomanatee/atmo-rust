@@ -11,19 +11,6 @@ pub struct Planet {
     pub mantle_density_gcm3: f64
 }
 
-pub const EARTH_ID: Uuid = Uuid::from_u128(0x1234567890abcdef1234567890abcdef);
-pub const EARTH_SIM_ID: Uuid = Uuid::from_u128(0xfedcba9876543210fedcba9876543210);
-
-pub static EARTH: Lazy<Planet> =
-    Lazy::new(||
-    Planet {
-    radius_km: EARTH_RADIUS_KM,
-    id: EARTH_ID,
-    sim_id: EARTH_SIM_ID,
-    mantle_density_gcm3: RHO_EARTH,
-});
-
-
 pub struct PlanetParams {
     pub sim_id: Uuid,
     pub radius: i32,

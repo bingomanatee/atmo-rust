@@ -6,7 +6,7 @@ use crate::asthenosphere::AsthenosphereCell;
 use crate::rock_store::RockStore;
 use crate::asthenosphere::ASTH_RES;
 use crate::planet::Planet;
-use crate::asth_constants::{AVG_STARTING_VOLUME, CELL_ENERGY_START, CELL_ENERGY_EQUILIBRIUM};
+use crate::constants::{AVG_STARTING_VOLUME_KM_3, CELL_JOULES_START, CELL_JOULES_EQUILIBRIUM};
 use h3o::{CellIndex, LatLng};
 
 pub struct GifExporter {
@@ -64,7 +64,7 @@ impl GifExporter {
     fn collect_cells_for_step(&self, store: &RockStore, step: u32) -> Result<Vec<(CellIndex, AsthenosphereCell)>, Box<dyn std::error::Error>> {
         let mut cells = Vec::new();
         
-        crate::h3o_utils::H3Utils::iter_at(ASTH_RES, |cell_index| {
+        crate::h3_utils::H3Utils::iter_at(ASTH_RES, |cell_index| {
             if let Ok(Some(cell)) = store.get_asth(cell_index, step) {
                 cells.push((cell_index, cell));
             }
@@ -108,12 +108,12 @@ impl GifExporter {
 
     fn cell_to_color(&self, cell: &AsthenosphereCell) -> Rgb<u8> {
         // Gray scale based on volume: 75-125% of AVG_STARTING_VOLUME
-        let volume_min = AVG_STARTING_VOLUME * 0.75;
-        let volume_max = AVG_STARTING_VOLUME * 1.25;
+        let volume_min = AVG_STARTING_VOLUME_KM_3 * 0.75;
+        let volume_max = AVG_STARTING_VOLUME_KM_3 * 1.25;
         let volume_normalized = ((cell.volume - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
 
         // Hue based on energy: Red at CELL_ENERGY_START+ to Blue at CELL_ENERGY_EQUILIBRIUM
-        let energy_normalized = ((cell.energy_k - CELL_ENERGY_EQUILIBRIUM) / (CELL_ENERGY_START - CELL_ENERGY_EQUILIBRIUM)).clamp(0.0, 1.0);
+        let energy_normalized = ((cell.energy_j - CELL_JOULES_EQUILIBRIUM) / (CELL_JOULES_START - CELL_JOULES_EQUILIBRIUM)).clamp(0.0, 1.0);
 
         // Interpolate between blue (cold) and red (hot)
         let red = (energy_normalized * 255.0) as u8;

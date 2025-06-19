@@ -8,7 +8,7 @@ use rand::Rng;
 use std::f64::consts::FRAC_PI_6;
 use uuid::Uuid;
 use crate::geoconverter::GeoCellConverter;
-use crate::h3o_utils::PointSampler;
+use crate::h3_utils::PointSampler;
 
 pub struct PlateGeneratorConfig {
     pub target_coverage: f64,
@@ -263,8 +263,9 @@ struct AreaStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planet::{EARTH, EARTH_RADIUS_KM};
+    use crate::planet::{EARTH_RADIUS_KM};
     use uuid::Uuid;
+    use crate::constants::EARTH;
 
     #[test]
     fn test_generate_one_with_full_config() {
@@ -331,8 +332,6 @@ mod tests {
 
     #[test]
     fn test_generate_radii() {
-        use crate::planet::EARTH;
-
         let target_coverage = 0.5;
         let min_radius = 200;
         let max_radius = EARTH_RADIUS_KM / 3;

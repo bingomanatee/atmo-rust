@@ -3,6 +3,9 @@ name = "atmo-rust"
 version = "0.1.0"
 edition = "2024"
 
+[profile.test]
+warnings = false
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"      # optional, just for readable dumps

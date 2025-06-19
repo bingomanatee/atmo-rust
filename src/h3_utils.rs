@@ -3,6 +3,8 @@ use h3o::{CellIndex, LatLng, Resolution};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
+pub struct CellAndBase(CellIndex, CellIndex);
+
 pub struct PointSampler {
     primary_cells: Vec<CellIndex>,
     current_index: usize,
@@ -79,6 +81,8 @@ impl PointSampler {
 pub struct H3Utils;
 
 impl H3Utils {
+    // note - given the opaccity of rust closures this is not a useful pattern -
+    // use the below method in the future
     /// Iterate over all H3 cells at the given resolution, calling `callback` for each cell.
     pub fn iter_at<F>(resolution: Resolution, mut callback: F)
     where
@@ -91,10 +95,15 @@ impl H3Utils {
         }
     }
 
-    pub fn iter_at_iter(resolution: Resolution) -> impl Iterator<Item = CellIndex> {
-        let mut cells = Vec::new();
-        H3Utils::iter_at(resolution, |cell| cells.push(cell));
-        cells.into_iter()
+    pub fn iter_cells_with_base(
+        resolution: Resolution,
+    ) -> impl Iterator<Item = (CellIndex, CellIndex)> {
+        CellIndex::base_cells().into_iter().flat_map(move |base_cell| {
+            base_cell
+                .children(resolution)
+                .into_iter()
+                .map(move |child| (child, base_cell))
+        })
     }
 }
 

@@ -1,5 +1,5 @@
-use crate::asth_constants::{
-    AVG_VOLUME_TO_ADD, CELL_ENERGY_EQUILIBRIUM, CELL_ENERGY_START, COOLING_RATE, K_PER_VOLUME,
+use crate::constants::{
+    AVG_VOLUME_TO_ADD, CELL_JOULES_EQUILIBRIUM, CELL_JOULES_START, COOLING_RATE, JOULES_PER_KM3,
     MAX_SUNK_TEMP, STANDARD_STEPS,
 };
 use crate::asthenosphere::AsthenosphereCell;
@@ -24,7 +24,7 @@ pub fn cool_asth_cell(
     step: u32,
     total_mio_years: u32,
 ) -> Result<ProcessResult, String> {
-    let cool_rate = (CELL_ENERGY_EQUILIBRIUM / CELL_ENERGY_START).powf(1.0 / (total_mio_years as f64));
+    let cool_rate = (CELL_JOULES_EQUILIBRIUM / CELL_JOULES_START).powf(1.1 / (total_mio_years as f64));
 
     // Print cool rate only once, even when called in parallel
     COOL_RATE_PRINTED.call_once(|| {
@@ -33,12 +33,12 @@ pub fn cool_asth_cell(
     match store.get_asth(l2_cell, step - 1) {
         // to tune the system we are ONLY considering cooling rate;
         Ok(Some(old_cell)) => {
-            let new_energy = old_cell.energy_k as f64 * cool_rate;
+            let new_energy = old_cell.energy_j as f64 * cool_rate;
 
             let new_cell = AsthenosphereCell {
                 step,
                 volume: old_cell.volume,
-                energy_k: new_energy,
+                energy_j: new_energy,
                 ..old_cell.clone()
             };
             
