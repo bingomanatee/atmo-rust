@@ -25,11 +25,11 @@ impl<'a> AslMapper<'a> {
             .clone()
     }
 
-    /// Returns the Rc<RefCell> of the next cell.
-    /// The caller is responsible for borrowing from it.
-    pub fn next_cell_rc(&self) -> Rc<RefCell<AsthenosphereCellLinked>> {
+    /// Returns the Rc<RefCell> of the next cell if it exists.
+    pub fn next_cell_rc(&self) -> Option<Rc<RefCell<AsthenosphereCellLinked>>> {
         let current_rc = self.cell_rc();
-        AsthenosphereCellLinked::add(&current_rc)
+        let current_ref = current_rc.borrow();
+        current_ref.next.as_ref().map(|next| next.clone())
     }
 
     /// Returns the neighbors of the current cell.
@@ -92,7 +92,20 @@ impl<'a> AslMapper<'a> {
         let root_ref = root_rc.borrow();
         let root_volume = root_ref.cell.volume;
         let root_energy = root_ref.cell.energy_j;
-        drop(root_ref); // Release borrow before mutable borrow
+        let root_energy_per_volume = if root_volume > 0.0 {
+            root_energy / root_volume
+        } else {
+            0.0
+        };
+
+        // Check if next cell exists
+        if root_ref.next.is_none() {
+            return; // Skip if no next cell exists
+        }
+
+        // Get reference to the next cell
+        let next_rc = root_ref.next.as_ref().unwrap().clone();
+        drop(root_ref); // Release borrow before proceeding
 
         let equilibrium_volume = self.equilibrium();
 
@@ -110,7 +123,7 @@ impl<'a> AslMapper<'a> {
             .map(|neighbor| (root_volume - neighbor.volume).max(0.0))
             .sum();
 
-        let next_rc = self.next_cell_rc();
+        // Update next cell
         let mut next_ref = next_rc.borrow_mut();
 
         next_ref.cell.volume += volume_to_move;
@@ -129,24 +142,27 @@ impl<'a> AslMapper<'a> {
                 .expect("Neighbor cell not found")
                 .clone();
 
-            // Ensure the neighbor's next cell exists by calling add
-            let neighbor_next_rc = AsthenosphereCellLinked::add(&neighbor_rc);
+            let neighbor_ref = neighbor_rc.borrow();
 
-            let mut neighbor_next_ref = neighbor_next_rc.borrow_mut();
+            // Skip if neighbor has no next cell
+            if neighbor_ref.next.is_none() {
+                continue;
+            }
+
+            // Get reference to the neighbor's next cell
+            let neighbor_next_rc = neighbor_ref.next.as_ref().unwrap().clone();
+            drop(neighbor_ref); // Release borrow before mutable borrow
 
             let gap = (root_volume - neighbor_cell.volume).max(0.0);
             if gap <= 0.0 || total_gap <= 0.0 {
                 continue;
             }
+            let mut neighbor_next_ref = neighbor_next_rc.borrow_mut();
 
-            let neighbor_volume_change = volume_to_move * (gap / total_gap);
-
-            neighbor_next_ref.cell.volume -= neighbor_volume_change;
-            if neighbor_cell.volume > 0.0 {
-                let energy_change =
-                    neighbor_cell.energy_j * neighbor_volume_change / neighbor_cell.volume;
-                neighbor_next_ref.cell.energy_j -= energy_change;
-            }
+            let fraction_of_moved_volume = gap / total_gap;
+            let neighbor_volume_add = volume_to_move * fraction_of_moved_volume;
+            neighbor_next_ref.cell.volume += neighbor_volume_add;
+            neighbor_next_ref.cell.energy_j += root_energy_per_volume * neighbor_volume_add;
         }
     }
 }
