@@ -8,11 +8,20 @@ use crate::planet::Planet;
 use crate::constants::{AVG_STARTING_VOLUME_KM_3, CELL_JOULES_START, CELL_JOULES_EQUILIBRIUM};
 use h3o::{CellIndex, LatLng};
 
+macro_rules! echo {
+    ($self:expr, $($arg:tt)*) => {
+        if $self.debug {
+            println!($($arg)*);
+        }
+    };
+}
+
 pub struct PngExporter {
     width: u32,
     height: u32,
     planet: Planet,
     pixel_to_cell_map: Option<HashMap<(u32, u32), CellIndex>>,
+    debug: bool,
 }
 
 impl PngExporter {
@@ -22,7 +31,12 @@ impl PngExporter {
             height, 
             planet,
             pixel_to_cell_map: None,
+            debug: false,
         }
+    }
+    
+    pub fn set_debug(&mut self, debug: bool) {
+        self.debug = debug;
     }
 
     /// Export asthenosphere simulation as PNG images every 10 steps using Voronoi pattern
@@ -39,7 +53,7 @@ impl PngExporter {
         
         // Generate pixel-to-cell mapping on first run
         if self.pixel_to_cell_map.is_none() {
-            println!("Generating Voronoi pixel-to-cell mapping...");
+            echo!(self, "Generating Voronoi pixel-to-cell mapping...");
             self.generate_pixel_to_cell_map(store, start_step)?;
         }
 
@@ -90,12 +104,12 @@ impl PngExporter {
             
             // Progress indicator
             if y % 50 == 0 {
-                println!("Mapping progress: {}/{}", y, self.height);
+                echo!(self, "Mapping progress: {}/{}", y, self.height);
             }
         }
         
         self.pixel_to_cell_map = Some(pixel_map);
-        println!("Voronoi mapping complete!");
+        echo!(self, "Voronoi mapping complete!");
         Ok(())
     }
 
@@ -190,7 +204,7 @@ impl PngExporter {
     pub fn render_voronoi_image_from_cells(&mut self, cells: &[(CellIndex, AsthenosphereCell)]) -> RgbImage {
         // Generate pixel-to-cell mapping if not already done
         if self.pixel_to_cell_map.is_none() {
-            println!("Generating Voronoi pixel-to-cell mapping...");
+            echo!(self, "Generating Voronoi pixel-to-cell mapping...");
             self.generate_pixel_to_cell_map_from_cells(cells);
         }
         
@@ -202,7 +216,7 @@ impl PngExporter {
     
     /// Generate pixel-to-cell mapping from cell data instead of reading from store
     fn generate_pixel_to_cell_map_from_cells(&mut self, cells: &[(CellIndex, AsthenosphereCell)]) {
-        println!("      🗺️  Generating mapping for {} pixels and {} cells...", self.width * self.height, cells.len());
+        echo!(self, "      🗺️  Generating mapping for {} pixels and {} cells...", self.width * self.height, cells.len());
         let mut pixel_map = HashMap::new();
         
         // Pre-compute cell positions and organize into spatial grid (10 degree regions)
@@ -217,7 +231,7 @@ impl PngExporter {
         let grid_size = (10.0_f64).to_radians(); // 10 degrees in radians
         let mut spatial_grid: HashMap<(i32, i32), Vec<(CellIndex, f64, f64)>> = HashMap::new();
         
-        println!("      📦 Organizing cells into spatial grid...");
+        echo!(self, "      📦 Organizing cells into spatial grid...");
         for (cell_index, lat, lon) in &cell_positions {
             let grid_lat = (lat / grid_size).floor() as i32;
             let grid_lon = (lon / grid_size).floor() as i32;
@@ -226,7 +240,7 @@ impl PngExporter {
                 .push((*cell_index, *lat, *lon));
         }
         
-        println!("      📊 Created spatial grid with {} regions", spatial_grid.len());
+        echo!(self, "      📊 Created spatial grid with {} regions", spatial_grid.len());
         
         let total_pixels = self.width * self.height;
         let mut processed = 0;
@@ -276,13 +290,13 @@ impl PngExporter {
                 
                 processed += 4;
                 if processed % 120000 == 0 {
-                    println!("      📊 Mapping progress: {}/{} pixels ({:.1}%)", processed, total_pixels, (processed as f64 / total_pixels as f64) * 100.0);
+                    echo!(self, "      📊 Mapping progress: {}/{} pixels ({:.1}%)", processed, total_pixels, (processed as f64 / total_pixels as f64) * 100.0);
                 }
             }
         }
         
         self.pixel_to_cell_map = Some(pixel_map);
-        println!("      ✅ Voronoi mapping complete!");
+        echo!(self, "      ✅ Voronoi mapping complete!");
     }
     
     /// Add a temperature distribution histogram to the bottom half of the image
@@ -484,37 +498,39 @@ impl PngExporter {
     /// Extract color calculation for reuse in histogram
     fn energy_to_color(&self, energy_normalized: f64) -> Rgb<u8> {
         let (red, green, blue) = if energy_normalized >= 0.8 {
-            // White (hottest: 0.8-1.0) - smooth transition to pure white
+            // Yellow to White (hottest: 0.8-1.0) - smooth transition  
             let t = (energy_normalized - 0.8) / 0.2;
-            let intensity = 200.0 + (55.0 * t); // Goes from light gray to white
-            (intensity as u8, intensity as u8, intensity as u8)
+            let red_val = 255.0;
+            let green_val = 255.0;
+            let blue_val = 100.0 + (155.0 * t); // Yellow (100) to white (255)
+            (red_val as u8, green_val as u8, blue_val as u8)
         } else if energy_normalized >= 0.6 {
-            // Yellow to Light Gray (hot: 0.6-0.8) 
+            // Orange to Yellow (hot: 0.6-0.8) 
             let t = (energy_normalized - 0.6) / 0.2;
             let red_val = 255.0;
-            let green_val = 255.0; 
-            let blue_val = 100.0 + (100.0 * t); // Yellow (100) to light gray (200)
-            (red_val as u8, green_val as u8, blue_val as u8)
-        } else if energy_normalized >= 0.4 {
-            // Orange to Yellow (warm: 0.4-0.6)
-            let t = (energy_normalized - 0.4) / 0.2;
-            let red_val = 255.0;
-            let green_val = 150.0 + (105.0 * t); // Orange (150) to Yellow (255)
+            let green_val = 150.0 + (105.0 * t); // Orange (150) to Yellow (255) 
             let blue_val = 0.0 + (100.0 * t); // Orange (0) to Yellow (100)
             (red_val as u8, green_val as u8, blue_val as u8)
-        } else if energy_normalized >= 0.2 {
-            // Red to Orange (medium: 0.2-0.4)
-            let t = (energy_normalized - 0.2) / 0.2;
+        } else if energy_normalized >= 0.4 {
+            // Red to Orange (warm: 0.4-0.6)
+            let t = (energy_normalized - 0.4) / 0.2;
             let red_val = 255.0;
             let green_val = 0.0 + (150.0 * t); // Red (0) to Orange (150)
             let blue_val = 0.0;
             (red_val as u8, green_val as u8, blue_val as u8)
-        } else {
-            // Purple to Red (coldest: 0.0-0.2)
-            let t = energy_normalized / 0.2;
+        } else if energy_normalized >= 0.2 {
+            // Purple to Red (medium: 0.2-0.4)
+            let t = (energy_normalized - 0.2) / 0.2;
             let red_val = 128.0 + (127.0 * t); // Purple (128) to Red (255)
             let green_val = 0.0;
             let blue_val = 255.0 * (1.0 - t); // Purple (255) to Red (0)
+            (red_val as u8, green_val as u8, blue_val as u8)
+        } else {
+            // Black to Purple (coldest: 0.0-0.2)
+            let t = energy_normalized / 0.2;
+            let red_val = 0.0 + (128.0 * t); // Black (0) to Purple (128)
+            let green_val = 0.0;
+            let blue_val = 0.0 + (255.0 * t); // Black (0) to Purple (255)
             (red_val as u8, green_val as u8, blue_val as u8)
         };
         

@@ -11,7 +11,7 @@ fn main() {
         steps: 500, // Total simulation steps
         store_path: String::from("./data/asth_sim_linked_demo"),
         visualize: true,
-        vis_freq: 10, // Export visualization every 5 steps
+        vis_freq: 4, // Export visualization every 5 steps
         debug: false, // Set to true for detailed progress output
     };
     

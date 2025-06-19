@@ -6,8 +6,8 @@ use crate::h3_utils::H3Utils;
 use crate::planet::Planet;
 use glam::Vec3;
 use h3o::{CellIndex, Resolution};
-use noise::{NoiseFn, Perlin};
 use serde::{Deserialize, Serialize};
+use crate::perlin_noise_generator::PerlinNoiseGenerator;
 
 /**
 some assumptions: the meaningful volume of the asthenosphere we track is a 10km
@@ -79,39 +79,26 @@ impl AsthenosphereCell {
         } = args;
         let resolution = res;
         let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
-        let per = Perlin::new(seed);
+        
+        // Create simple noise generators for volume and energy variation
+        let volume_noise = PerlinNoiseGenerator::new(seed, 3.0, 1.0);      // Moderate detail and sharpness
+        let energy_noise = PerlinNoiseGenerator::new(seed + 1, 4.0, 1.5);  // Slightly different settings
+        
         let mut index = 0u32;
         H3Utils::iter_at(res, |l2_cell| {
-            let location = gc.cell_to_vec3(l2_cell);
-            let noise_scale = 25.0;
-            let scaled_location = location.normalize() * noise_scale as f32;
-            let noise_val = per.get(scaled_location.to_array().map(|n| n as f64));
-
-            let exponential_noise = if noise_val > 0.0 {
-                noise_val.powf(2.0) // Less extreme exponent for smoother variation
-            } else {
-                -((-noise_val).powf(2.0))
-            };
-
-            // Much more extreme variation: 0.3x to 2.5x the base volume
-            let random_scale = 0.3 + (exponential_noise + 1.0) * 0.7; // Maps [-1,1] to [0.3, 2.5]
-            let volume = AVG_STARTING_VOLUME_KM_3 * random_scale as f64;
+            let location = gc.cell_to_vec3(l2_cell).normalize();
             
-            // Add independent energy variation using different noise parameters
-            let energy_noise_val = per.get([
-                (scaled_location.x * 1.7) as f64, 
-                (scaled_location.y * 1.7) as f64, 
-                (scaled_location.z * 1.7) as f64
-            ]);
+            // Get noise values [-1, 1] and map to ranges centered around 1.0
+            let volume_noise_val = volume_noise.sample(location);
+            let energy_noise_val = energy_noise.sample(location);
             
-            let energy_exponential_noise = if energy_noise_val > 0.0 {
-                energy_noise_val.powf(1.5)
-            } else {
-                -((-energy_noise_val).powf(1.5))
-            };
+            // Map volume noise [-1, 1] to [0.8, 1.2] centered around 1.0 (80% to 120% of base)
+            let volume_scale = 1.0 + volume_noise_val * 0.2; // Maps [-1,1] to [0.8, 1.2]
             
-            // Independent energy variation: 0.2x to 3.0x base energy per volume
-            let energy_scale = 0.2 + (energy_exponential_noise + 1.0) * 0.8; // Maps [-1,1] to [0.2, 3.0]
+            // Map energy noise [-1, 1] to [0.7, 1.3] centered around 1.0 (70% to 130% of base)  
+            let energy_scale = 1.0 + energy_noise_val * 0.3; // Maps [-1,1] to [0.7, 1.3]
+            
+            let volume = AVG_STARTING_VOLUME_KM_3 * volume_scale;
             let adjusted_energy_per_volume = energy_per_volume * energy_scale;
             
             let asth_cell = AsthenosphereCell::at_cell(AsthenosphereCellParams {
