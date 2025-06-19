@@ -29,9 +29,9 @@ impl AsthenosphereCellLinked {
 
     pub fn add(self_rc: &Rc<RefCell<AsthenosphereCellLinked>>) -> Rc<RefCell<Self>> {
         if let Some(next_rc) = &self_rc.borrow().next {
-            Rc::clone(next_rc);
+            return Rc::clone(next_rc);
         }
-
+        
         let new_cell = AsthenosphereCell {
             step: self_rc.borrow().cell.step + 1,
             ..self_rc.borrow().cell.clone()

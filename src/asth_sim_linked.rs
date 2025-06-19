@@ -1,6 +1,9 @@
 use crate::asthenosphere::{ASTH_RES, AsthenosphereCell, CellsForPlanetArgs};
 use crate::asthenosphere_linked::AsthenosphereCellLinked;
-use crate::constants::{ANOMALY_DECAY_RATE, ANOMALY_ENERGY_AMOUNT, ANOMALY_SPAWN_CHANCE, ANOMALY_VOLUME_AMOUNT, AVG_STARTING_VOLUME_KM_3, CELL_JOULES_EQUILIBRIUM, CELL_JOULES_START, JOULES_PER_KM3, LEVEL_AMT};
+use crate::constants::{
+    ANOMALY_DECAY_RATE, ANOMALY_SPAWN_CHANCE, ANOMALY_VOLUME_AMOUNT, AVG_STARTING_VOLUME_KM_3,
+    CELL_JOULES_EQUILIBRIUM, CELL_JOULES_START, JOULES_PER_KM3, LEVEL_AMT,
+};
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
 use crate::rock_store::RockStore;
@@ -10,7 +13,28 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::rc::Rc;
+use uuid::Uuid;
+use crate::asl_leveller::AslMapper;
 
+struct AsthChange {
+    energy_j: f64,
+    volume: f64,
+    energy_j_change: f64,
+    volume_change: f64,
+    neighbors: Vec<CellIndex>,
+}
+
+impl AsthChange {
+    pub fn new(source: &AsthenosphereCell) -> AsthChange {
+        AsthChange {
+            energy_j: source.energy_j,
+            volume: source.volume,
+            energy_j_change: 0.0,
+            volume_change: 0.0,
+            neighbors: source.neighbors.clone(),
+        }
+    }
+}
 pub struct ASLParams {
     pub planet: Planet,
     pub steps: u64,
@@ -21,7 +45,7 @@ pub struct ASLParams {
 }
 
 pub struct AsthSimLinked {
-    cells: HashMap<CellIndex, Rc<RefCell<AsthenosphereCellLinked>>>,
+    pub(crate) cells: HashMap<CellIndex, Rc<RefCell<AsthenosphereCellLinked>>>,
     current_step: u64,
     steps: u64,
     planet: Planet,
@@ -64,32 +88,36 @@ impl AsthSimLinked {
         sim
     }
 
-    pub fn run_step(&mut self) {
-        println!("  🔥 Cooling cells...");
-        self.cool_cells();
+    fn debug_print(&self, message: &str) {
+        if self.debug {
+            println!("{}", message);
+        }
+    }
 
-        println!("  📏 Leveling cells...");
+    pub fn run_step(&mut self) {
+        self.debug_print("  📏 Leveling cells...");
         self.level_cells();
 
-        println!("  🌀 Processing anomalies...");
+        self.debug_print("  🔥 Cooling cells...");
+        self.cool_cells();
+
+        self.debug_print("  🌀 Processing anomalies...");
         self.process_anomalies();
 
-        println!("  ⚡ Spawning new anomalies...");
+        self.debug_print("  ⚡ Spawning new anomalies...");
         self.spawn_anomalies();
 
-        println!("  ⏭️  Advancing to next step...");
-        self.advance_to_next_step();
+        self.debug_print("  ⏭️  Advancing to next step...");
+        self.advance();
 
-        // Export visualization every 5 frames if enabled
         if self.visualize && self.current_step % self.vis_freq == 0 {
-            println!("  🖼️  Exporting visualization...");
+            self.debug_print("  🖼️  Exporting visualization...");
             self.export_visualization();
         }
     }
 
     fn export_visualization(&self) {
-        println!("    📁 Creating output directory...");
-        // Create output directory if it doesn't exist
+        self.debug_print("    📁 Creating output directory...");
         let output_dir = "vis/asth_sim_linked";
         if let Err(_) = fs::create_dir_all(output_dir) {
             eprintln!(
@@ -99,32 +127,28 @@ impl AsthSimLinked {
             return;
         }
 
-        println!("    📊 Collecting {} cells for export...", self.cells.len());
-        // Collect current cell data for visualization with simplified energy values for speed
+        self.debug_print(&format!("    📊 Collecting {} cells for export...", self.cells.len()));
         let cells_for_export: Vec<(CellIndex, AsthenosphereCell)> = self
             .cells
             .iter()
             .map(|(&cell_id, cell)| {
                 let borrowed_cell = cell.borrow();
                 let mut simplified_cell = borrowed_cell.cell.clone();
-                // Round energy to reduce floating point precision for faster processing
                 simplified_cell.energy_j = (simplified_cell.energy_j / 100.0).round() * 100.0;
                 (cell_id, simplified_cell)
             })
             .collect();
 
-        println!("    🎨 Creating PNG exporter (900x450)...");
-        // Create PNG exporter with moderate resolution for faster rendering
+        self.debug_print("    🎨 Creating PNG exporter (900x450)...");
         let mut exporter = PngExporter::new(900, 450, self.planet.clone());
 
-        println!("    🖌️  Rendering Voronoi image...");
+        self.debug_print("    🖌️  Rendering Voronoi image...");
         let image = exporter.render_voronoi_image_from_cells(&cells_for_export);
 
-        println!("    💾 Saving image file...");
-        // Save the image
+        self.debug_print("    💾 Saving image file...");
         let filename = format!("{}/step_{:04}.png", output_dir, self.current_step);
         match image.save(&filename) {
-            Ok(_) => println!("    ✅ Exported visualization: {}", filename),
+            Ok(_) => self.debug_print(&format!("    ✅ Exported visualization: {}", filename)),
             Err(e) => eprintln!(
                 "    ❌ Failed to export visualization for step {}: {}",
                 self.current_step, e
@@ -132,8 +156,7 @@ impl AsthSimLinked {
         }
     }
 
-    fn advance_to_next_step(&mut self) {
-        // 1. Save each cell to disk using batch save
+    fn advance(&mut self) {
         let cells_to_save: Vec<AsthenosphereCell> = self
             .cells
             .values()
@@ -148,10 +171,8 @@ impl AsthSimLinked {
             self.store.put_asth_batch(&cells_to_save);
         }
 
-        // 2. Increment current_step
         self.current_step += 1;
 
-        // 3. Collect cell IDs that have next cells
         let cell_ids_with_next: Vec<CellIndex> = self
             .cells
             .iter()
@@ -164,7 +185,6 @@ impl AsthSimLinked {
             })
             .collect();
 
-        // 4. For each cell with a next: promote next to current, trim tails, add new next
         for cell_id in cell_ids_with_next {
             if let Some(current_cell) = self.cells.get(&cell_id) {
                 let next_cell = {
@@ -173,16 +193,9 @@ impl AsthSimLinked {
                 };
 
                 if let Some(next_cell) = next_cell {
-                    // Update the step on the next cell
                     next_cell.borrow_mut().cell.step = self.current_step as u32;
-
-                    // Trim the tail (remove previous links)
                     next_cell.borrow_mut().unlink_all_prev();
-
-                    // Update hash to point to the next cell (now current)
                     self.cells.insert(cell_id, next_cell.clone());
-
-                    // Add a new next cell
                     AsthenosphereCellLinked::add(&next_cell);
                 }
             }
@@ -195,7 +208,6 @@ impl AsthSimLinked {
         for (_id, cell) in &self.cells {
             AsthenosphereCellLinked::add(cell);
 
-            // Access the next cell through borrowing
             if let Some(next_cell) = &cell.borrow().next {
                 let mut next = next_cell.borrow_mut();
                 next.cell.energy_j *= cool_rate;
@@ -204,74 +216,16 @@ impl AsthSimLinked {
     }
 
     pub fn level_cells(&self) {
-        // Level between spatial neighbors, reading from current states and writing to next states
-        for (_id, cell_a) in &self.cells {
-            let neighbors = &cell_a.borrow().cell.neighbors;
-            for neighbor_id in neighbors {
-                if let Some(cell_b) = self.cells.get(neighbor_id) {
-                    self.level_between_neighbors(cell_a, cell_b);
-                }
-            }
-        }
-    }
-
-    fn level_between_neighbors(
-        &self,
-        cell_a: &Rc<RefCell<AsthenosphereCellLinked>>,
-        cell_b: &Rc<RefCell<AsthenosphereCellLinked>>,
-    ) {
-        // PARADIGM: Read current cells, write to next cells
-        // This allows us to read consistent state while writing changes for next step
-        let current_a = cell_a.borrow();
-        let current_b = cell_b.borrow();
-
-        let volume_a = current_a.cell.volume;
-        let volume_b = current_b.cell.volume;
-        let volume_diff = volume_a - volume_b;
-
-        if volume_diff.abs() < f64::EPSILON {
-            return; // No significant difference
-        }
-
-        // Only flow downhill - from higher volume to lower volume
-        if volume_diff > 0.0 {
-            // Moderate exponential leveling: smooth gradual scaling instead of sharp threshold
-            // Use volume difference relative to average starting volume as the baseline
-            let relative_diff = volume_diff / AVG_STARTING_VOLUME_KM_3;
-            
-
-            // Calculate transfer amount with moderate exponential scaling
-            let base_transfer = volume_diff * LEVEL_AMT;
-            let transfer_amount = base_transfer;
-
-            // Calculate energy per unit volume for source cell
-            let energy_per_volume_a = if volume_a > 0.0 {
-                current_a.cell.energy_j / volume_a
-            } else {
-                0.0
-            };
-
-            let energy_to_transfer = transfer_amount * energy_per_volume_a;
-
-            // Write changes to next states only - both must exist
-            if let (Some(next_a), Some(next_b)) = (&current_a.next, &current_b.next) {
-                let mut next_a_b = next_a.borrow_mut();
-                let mut next_b_b = next_b.borrow_mut();
-                next_a_b.cell.volume -= transfer_amount;
-                next_b_b.cell.volume += transfer_amount;
-                next_a_b.cell.energy_j -= energy_to_transfer;
-                next_b_b.cell.energy_j += energy_to_transfer;
-            }
+        for (id,_) in &self.cells {
+           let mapper = AslMapper::new(self, id);
+            mapper.level();
         }
     }
 
     pub fn process_anomalies(&self) {
-        // PARADIGM: Read current cells, write to next cells
-        // Decay existing anomalies and apply their effects
         for (_id, cell) in &self.cells {
             let current = cell.borrow();
 
-            // Only process if there are anomalies and next cell exists
             if (current.cell.anomaly_energy.abs() > 1e-6
                 || current.cell.anomaly_volume.abs() > 1e-6)
                 && current.next.is_some()
@@ -279,17 +233,14 @@ impl AsthSimLinked {
                 if let Some(next_cell) = &current.next {
                     let mut next = next_cell.borrow_mut();
 
-                    // Apply anomaly effects to actual energy and volume
                     next.cell.energy_j += current.cell.anomaly_energy;
                     next.cell.volume += current.cell.anomaly_volume;
 
-                    // Decay anomalies by 3% per step - the anomaly fields themselves decay
                     next.cell.anomaly_energy =
                         current.cell.anomaly_energy * (1.0 - ANOMALY_DECAY_RATE);
                     next.cell.anomaly_volume =
                         current.cell.anomaly_volume * (1.0 - ANOMALY_DECAY_RATE);
 
-                    // Set to zero if negligible (less than +/-1.0)
                     if next.cell.anomaly_energy.abs() < 1.0 {
                         next.cell.anomaly_energy = 0.0;
                     }
@@ -304,9 +255,7 @@ impl AsthSimLinked {
     pub fn spawn_anomalies(&self) {
         let mut rng = rand::thread_rng();
 
-        // 15% chance to spawn an anomaly each cycle
         if rng.random::<f64>() < ANOMALY_SPAWN_CHANCE {
-            // Select a random cell
             let cell_indices: Vec<_> = self.cells.keys().collect();
             if let Some(&random_cell_id) =
                 cell_indices.get((rng.random::<f64>() * cell_indices.len() as f64) as usize)
@@ -323,25 +272,21 @@ impl AsthSimLinked {
         target_cell: &Rc<RefCell<AsthenosphereCellLinked>>,
         rng: &mut impl Rng,
     ) {
-        // PARADIGM: Read current cells, write to next cells
         let current = target_cell.borrow();
         let mut rand = rand::rng();
         let sign = if rng.random::<bool>() { 1.0 } else { -1.0 };
         let size = rand.random_range(0.01..0.1);
         let volume = ANOMALY_VOLUME_AMOUNT * sign * size;
-        // Apply to target cell
+
         if let Some(next_cell) = &current.next {
             let mut next = next_cell.borrow_mut();
 
-            // Randomly add or remove energy/volume (positive or negative anomaly)
-         
             next.cell.anomaly_volume += volume;
             next.cell.anomaly_energy += volume * JOULES_PER_KM3;
         }
 
-        // Apply smaller effects to neighbors (50% of main effect)
         let neighbors = current.cell.neighbors.clone();
-        drop(current); // Release borrow before iterating neighbors
+        drop(current);
         for neighbor_id in neighbors {
             if let Some(neighbor_cell) = self.cells.get(&neighbor_id) {
                 let neighbor_current = neighbor_cell.borrow();
@@ -354,21 +299,19 @@ impl AsthSimLinked {
         }
     }
 
-    /// Get the number of cells in the simulation
     pub fn cell_count(&self) -> usize {
         self.cells.len()
     }
 
-    /// Run the simulation for a specified number of steps
     pub fn run_simulation(&mut self, steps: u64) {
-        println!(
+        self.debug_print(&format!(
             "🌍 Starting AsthSimLinked simulation for {} steps...",
             steps
-        );
-        println!("📊 Initial state: {} cells loaded", self.cells.len());
+        ));
+        self.debug_print(&format!("📊 Initial state: {} cells loaded", self.cells.len()));
 
         for step in 1..=steps {
-            println!("🔄 Running step {} of {}:", step, steps);
+            self.debug_print(&format!("🔄 Running step {} of {}:", step, steps));
             self.run_step();
 
             if step % 10 == 0 {
@@ -376,17 +319,17 @@ impl AsthSimLinked {
             }
 
             if self.visualize && step % 5 == 0 {
-                println!("🖼️  Exported visualization for step {}", self.current_step);
+                self.debug_print(&format!("🖼️  Exported visualization for step {}", self.current_step));
             }
         }
 
         if self.visualize {
-            println!(
+            self.debug_print(&format!(
                 "🎉 Simulation completed! {} PNG files exported to vis/asth_sim_linked/",
                 (steps / 5) + 1
-            );
+            ));
         } else {
-            println!("🎉 Simulation completed!");
+            self.debug_print("🎉 Simulation completed!");
         }
     }
 }
@@ -418,7 +361,7 @@ mod tests {
 
         let config = ASLParams {
             planet: EARTH.clone(),
-            steps: 25, // Run for 25 steps to see multiple visualization exports
+            steps: 25,
             store_path: String::from("/tmp/test_asth_sim_linked"),
             visualize: true,
             vis_freq: 0,
@@ -427,10 +370,8 @@ mod tests {
 
         let mut sim = AsthSimLinked::new(config);
 
-        // Run the simulation for 25 steps (will export PNGs at steps 5, 10, 15, 20, 25)
         sim.run_simulation(25);
 
-        // Verify final state
         assert!(
             sim.cells.len() > 0,
             "Expected cells to remain after simulation"
@@ -453,7 +394,6 @@ mod tests {
 
         let mut sim = AsthSimLinked::new(config);
 
-        // Find two cells that are neighbors of each other
         let mut cell_a = None;
         let mut cell_b = None;
 
@@ -471,13 +411,11 @@ mod tests {
         }
 
         if let (Some(cell_a), Some(cell_b)) = (cell_a, cell_b) {
-            // Set different volumes to test levelling first
             cell_a.borrow_mut().cell.volume = 1000.0;
             cell_a.borrow_mut().cell.energy_j = 2000.0;
             cell_b.borrow_mut().cell.volume = 500.0;
             cell_b.borrow_mut().cell.energy_j = 1000.0;
 
-            // Create next cells for both - these will copy the current modified values
             let _next_a = AsthenosphereCellLinked::add(cell_a);
             let _next_b = AsthenosphereCellLinked::add(cell_b);
 
@@ -486,20 +424,17 @@ mod tests {
             let energy_before_a = cell_a.borrow().cell.energy_j;
             let energy_before_b = cell_b.borrow().cell.energy_j;
 
-            // Run levelling - this reads from current cells and writes to next cells
             sim.level_cells();
 
-            // PARADIGM: Check the NEXT cells where changes are written
-            // The level_cells method reads current state but writes changes to next state
             let volume_after_a = if let Some(next) = &cell_a.borrow().next {
                 next.borrow().cell.volume
             } else {
-                cell_a.borrow().cell.volume // fallback to current if no next
+                cell_a.borrow().cell.volume
             };
             let volume_after_b = if let Some(next) = &cell_b.borrow().next {
                 next.borrow().cell.volume
             } else {
-                cell_b.borrow().cell.volume // fallback to current if no next
+                cell_b.borrow().cell.volume
             };
             let energy_after_a = if let Some(next) = &cell_a.borrow().next {
                 next.borrow().cell.energy_j
@@ -512,7 +447,6 @@ mod tests {
                 cell_b.borrow().cell.energy_j
             };
 
-            // Check that volume flowed downhill (from higher to lower) by a significant amount
             if volume_before_a > volume_before_b {
                 let volume_decrease = volume_before_a - volume_after_a;
                 let volume_increase = volume_after_b - volume_before_b;
@@ -535,7 +469,6 @@ mod tests {
                 );
             }
 
-            // Check that total volume and energy are conserved
             let total_volume_before = volume_before_a + volume_before_b;
             let total_volume_after = volume_after_a + volume_after_b;
             let total_energy_before = energy_before_a + energy_before_b;
