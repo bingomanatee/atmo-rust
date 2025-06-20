@@ -1,5 +1,4 @@
 use uuid::Uuid;
-use num_traits::real::Real;
 use once_cell::sync::Lazy;
 use crate::planet::Planet;
 

@@ -1,5 +1,5 @@
 use glam::Vec3;
-use h3o::{CellIndex, LatLng, Resolution};
+use h3o::{CellIndex, DirectedEdgeIndex, LatLng, Resolution};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
@@ -98,12 +98,25 @@ impl H3Utils {
     pub fn iter_cells_with_base(
         resolution: Resolution,
     ) -> impl Iterator<Item = (CellIndex, CellIndex)> {
-        CellIndex::base_cells().into_iter().flat_map(move |base_cell| {
-            base_cell
-                .children(resolution)
-                .into_iter()
-                .map(move |child| (child, base_cell))
-        })
+        CellIndex::base_cells()
+            .into_iter()
+            .flat_map(move |base_cell| {
+                base_cell
+                    .children(resolution)
+                    .into_iter()
+                    .map(move |child| (child, base_cell))
+            })
+    }
+
+    /// Get all neighboring cells for a given cell index
+    pub fn neighbors_for(cell_index: CellIndex) -> Vec<CellIndex> {
+        // Get all neighboring cells
+        let mut neighbors: Vec<CellIndex> = cell_index
+            .grid_disk::<Vec<_>>(1)
+            .into_iter()
+            .filter(|&neighbor| neighbor != cell_index)
+            .collect();
+        neighbors
     }
 }
 

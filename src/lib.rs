@@ -2,7 +2,7 @@ pub mod sim;
 mod planet;
 mod plate_generator;
 mod vary;
-mod rock_store;
+pub mod rock_store;
 mod helpers;
 pub mod sim_manager;
 mod h3_utils;

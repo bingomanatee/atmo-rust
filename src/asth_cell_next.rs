@@ -64,7 +64,7 @@ impl AsthenosphereCellNext {
 
         // Generate random anomaly parameters using constants
         let mut rng = rand::rng();
-        let is_volcano = rng.random_bool(); // 50/50 chance volcano vs sinkhole
+        let is_volcano = rng.random_bool(0.5); // 50/50 chance volcano vs sinkhole
         let intensity_factor = rng.random_range(0.1..=1.0); // 10% to 100% of base amount
 
         let volume_change = if is_volcano {
@@ -79,25 +79,7 @@ impl AsthenosphereCellNext {
         true
     }
 
-    /// Apply and decay existing anomaly effects
-    pub fn process_anomaly(&mut self) {
-        if self.next_cell.anomaly_volume.abs() < 1e-10 {
-            return; // No anomaly to process
-        }
 
-        // Apply the anomaly effect to volume and derive energy automatically
-        let volume_change = self.next_cell.anomaly_volume;
-        self.next_cell.volume = (self.next_cell.volume + volume_change).max(0.0);
-        self.next_cell.energy_j = (self.next_cell.energy_j + volume_change * JOULES_PER_KM3).max(0.0);
-
-        // Decay the anomaly
-        self.next_cell.anomaly_volume *= (1.0 - ANOMALY_DECAY_RATE);
-
-        // Clear anomaly if it's become negligible
-        if self.next_cell.anomaly_volume.abs() < 1e-10 {
-            self.next_cell.anomaly_volume = 0.0;
-        }
-    }
 
     /// Check if this cell has an active anomaly
     pub fn has_anomaly(&self) -> bool {
@@ -116,12 +98,18 @@ impl AsthenosphereCellNext {
         self.next_cell.energy_j = (self.next_cell.energy_j + volume_change * JOULES_PER_KM3).max(0.0);
 
         // Decay the anomaly
-        self.next_cell.anomaly_volume *= (1.0 - ANOMALY_DECAY_RATE);
+        self.next_cell.anomaly_volume *= 1.0 - ANOMALY_DECAY_RATE;
 
         // Clear anomaly if it's become negligible
         if self.next_cell.anomaly_volume.abs() < 1e-10 {
             self.next_cell.anomaly_volume = 0.0;
         }
+    }
+
+    /// Add volume from anomaly propagation
+    pub fn volume_from_anomaly(&mut self, volume_change: f64) {
+        self.next_cell.volume = (self.next_cell.volume + volume_change).max(0.0);
+        self.next_cell.energy_j = (self.next_cell.energy_j + volume_change * JOULES_PER_KM3).max(0.0);
     }
 
     /// Add anomaly to this cell and degraded strength to neighbors
@@ -152,6 +140,7 @@ impl From<AsthenosphereCell> for AsthenosphereCellNext {
 mod tests {
     use super::*;
     use h3o::CellIndex;
+    use crate::h3_utils::H3Utils;
 
     fn create_test_cell(cell_index: CellIndex, volume: f64, energy_j: f64) -> AsthenosphereCellNext {
         let cell = AsthenosphereCell {
@@ -334,19 +323,33 @@ mod tests {
         let cell_index_a = CellIndex::try_from(0x8a1fb46622dffff_u64).unwrap();
         let cell_index_b = CellIndex::try_from(0x8a1fb46622e7fff_u64).unwrap();
 
-        let mut cell_a = SimulationCell::from_cell_index(cell_index_a, 1000.0, 2e12);
-        let mut cell_b = SimulationCell::from_cell_index(cell_index_b, 500.0, 1e12);
+        let mut cell_a = AsthenosphereCellNext::new(AsthenosphereCell {
+            id: cell_index_a,
+            neighbors: H3Utils::neighbors_for(cell_index_a),
+            step: 0,
+            volume: 1000.0,
+            energy_j: 2e12,
+            anomaly_volume: 0.0,
+        });
+        let mut cell_b = AsthenosphereCellNext::new(AsthenosphereCell {
+            id: cell_index_b,
+            neighbors: H3Utils::neighbors_for(cell_index_b),
+            step: 0,
+            volume: 500.0,
+            energy_j: 1e12,
+            anomaly_volume: 0.0,
+        });
 
         // Record initial totals
-        let initial_volume = cell_a.next_volume() + cell_b.next_volume();
-        let initial_energy = cell_a.next_energy() + cell_b.next_energy();
+        let initial_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
+        let initial_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
 
         // Transfer volume
         cell_a.move_volume_to(&mut cell_b, 200.0);
 
         // Check conservation
-        let final_volume = cell_a.next_volume() + cell_b.next_volume();
-        let final_energy = cell_a.next_energy() + cell_b.next_energy();
+        let final_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
+        let final_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
 
         assert!((initial_volume - final_volume).abs() < 1e-10, "Volume should be conserved");
         assert!((initial_energy - final_energy).abs() < 1e6, "Energy should be conserved");
