@@ -75,6 +75,7 @@ impl AsthenosphereCell {
             res,
             joules_per_km3: energy_per_volume,
             seed,
+            anomaly_freq,
         } = args;
         let resolution = res;
         let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
@@ -247,7 +248,8 @@ mod tests {
                 return asth_cell;
             },
             res: Resolution::Two,
-            seed: 42
+            seed: 42,
+            anomaly_freq: 0.0, // No anomalies in test
         });
 
         assert_eq!(cell_count, 5882, "wrong cell count");

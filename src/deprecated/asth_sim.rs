@@ -27,7 +27,7 @@ pub struct AsthSim<'a> {
     store: RockStore,
     planet: &'a Planet,
     mio_years: u32,
-    resolution: Resolution
+    resolution: Resolution,
 }
 
 pub struct AsthSimArgs<'a> {
@@ -35,6 +35,7 @@ pub struct AsthSimArgs<'a> {
     pub planet: &'a Planet,
     pub mio_years: u32,
     pub resolution: Resolution,
+    pub anomaly_freq: f64,
 }
 
 pub struct VolumeStats {
@@ -53,6 +54,7 @@ impl<'a> AsthSim<'a> {
             planet,
             mio_years,
             resolution,
+            anomaly_freq,
         } = args;
 
         let store = RockStore::open(&db_path).expect("cannot make store");
@@ -73,14 +75,15 @@ impl<'a> AsthSim<'a> {
                 }
                 asth_cell
             },
-            seed: 64
+            seed: 64,
+            anomaly_freq,
         });
 
         AsthSim {
             store,
             planet: &planet,
             mio_years,
-            resolution
+            resolution,
         }
     }
 
@@ -391,7 +394,7 @@ impl<'a> AsthSim<'a> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use crate::constants::EARTH;
+    use crate::constants::{ANOMALY_SPAWN_CHANCE, EARTH};
 
     #[test]
     #[ignore]
@@ -411,6 +414,7 @@ mod tests {
             planet: &planet,
             mio_years: 500,
             resolution: ASTH_RES,
+            anomaly_freq: ANOMALY_SPAWN_CHANCE,
         });
 
         // Run simulation for 500 steps with enhanced material changes
@@ -423,17 +427,15 @@ mod tests {
         let mut png_exporter = PngExporter::new(800, 400, planet.clone());
 
         // Export every 25th step (21 images total: 0, 25, 50, 75, ..., 500)
-        let result = png_exporter.export_asthenosphere_pngs(
-            &sim.store, 0,   // start_step
-            500, // end_step
-            25,  // step_interval - render every 25th step
-            target,
-        );
-
-        match result {
-            Ok(_) => println!("Successfully created PNG images in {} directory", target),
-            Err(e) => eprintln!("Failed to create PNGs: {}", e),
+        let mut cells_for_export: Vec<(CellIndex, AsthenosphereCell)> = Vec::new();
+        for step in (0..=500).step_by(25) {
+            H3Utils::iter_at(ASTH_RES, |cell_idx| {
+                if let Ok(Some(cell)) = sim.store.get_asth(cell_idx, step) {
+                    cells_for_export.push((cell_idx, cell));
+                }
+            });
         }
+        let result = png_exporter.render_voronoi_image_from_cells(&cells_for_export);
     }
 }
 

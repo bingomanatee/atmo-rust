@@ -2,7 +2,7 @@ use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs};
 use crate::asth_cell_next::AsthenosphereCellNext;
 use crate::binary_pair::BinaryPair;
 use crate::constants::{
-    ANOMALY_SPAWN_CHANCE, AVG_STARTING_VOLUME_KM_3, CELL_JOULES_EQUILIBRIUM, CELL_JOULES_START, JOULES_PER_KM3,
+    ANOMALY_SPAWN_CHANCE, JOULES_PER_KM3,
 };
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
@@ -10,7 +10,6 @@ use crate::rock_store::RockStore;
 use h3o::CellIndex;
 use rand::Rng;
 use std::collections::HashMap;
-use std::fs;
 use uuid::Uuid;
 
 /// Fast asthenosphere simulation without RefCell complexity
@@ -90,29 +89,24 @@ impl SimNext {
     fn generate_binary_pairs(&mut self) {
         println!("🔗 Generating binary pairs...");
 
-        self.binary_pairs = self.cells
-            .keys()
-            .flat_map(|&cell_index| {
-                cell_index
-                    .grid_disk::<Vec<_>>(1)
-                    .into_iter()
-                    .filter(|&neighbor| neighbor != cell_index) // Exclude self
-                    .filter(|neighbor| self.cells.contains_key(neighbor)) // Only existing cells
-                    .map(move |neighbor| {
-                        let pair = BinaryPair::new(cell_index, neighbor);
-                        (pair.to_string_id(), pair)
-                    })
-            })
-            .collect::<HashMap<String, BinaryPair>>()
-            .into_values()
-            .collect();
+        // Use a HashMap to store unique pairs
+        let mut pairs_map = HashMap::new();
 
-        println!("🔗 Generated {} unique binary pairs", self.binary_pairs.len());
+        // Process each cell using its precomputed neighbors
+        for (&cell_index, cell) in &self.cells {
+            // Use the precomputed neighbors list
+            for &neighbor_index in &cell.cell.neighbors {
+                let pair = BinaryPair::new(cell_index, neighbor_index);
+                pairs_map.insert(pair.to_string_id(), pair);
+            }
+        }
+
+        // Convert HashMap values to Vector
+        self.binary_pairs = pairs_map.into_values().collect();
     }
 
     /// Run a single simulation step
     pub fn run_step(&mut self) {
-        println!("🔄 Running step {}", self.step);
 
         // 1. Level cells (equilibrate volumes/energies)
         self.level_cells();
@@ -128,7 +122,6 @@ impl SimNext {
         self.commit_step();
 
         self.step += 1;
-        println!("✅ Completed step {}", self.step - 1);
     }
 
     /// Level cells using binary pairs (simple, fast version)
@@ -203,8 +196,34 @@ impl SimNext {
 
     /// Process existing anomalies in all cells
     fn process_anomalies(&mut self) {
-        for cell in self.cells.values_mut() {
-            cell.process_anomaly();
+        // Clone cell IDs to avoid borrowing conflicts
+        let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
+
+        for cell_id in cell_ids {
+            // Check if this cell has a strong anomaly that should propagate
+            let (should_propagate, neighbor_ids, volume_per_neighbor) = {
+                let cell = &self.cells[&cell_id];
+                if cell.next_cell.anomaly_volume.abs() > 10.0 && !cell.cell.neighbors.is_empty() {
+                    let volume_per_neighbor = cell.next_cell.anomaly_volume / cell.cell.neighbors.len() as f64;
+                    (true, cell.cell.neighbors.clone(), volume_per_neighbor)
+                } else {
+                    (false, vec![], 0.0)
+                }
+            };
+
+            // Process the anomaly for this cell
+            if let Some(cell) = self.cells.get_mut(&cell_id) {
+                cell.process_anomaly();
+            }
+
+            // Propagate to neighbors immediately
+            if should_propagate {
+                for neighbor_id in neighbor_ids {
+                    if let Some(neighbor_cell) = self.cells.get_mut(&neighbor_id) {
+                        neighbor_cell.volume_from_anomaly(volume_per_neighbor);
+                    }
+                }
+            }
         }
     }
 

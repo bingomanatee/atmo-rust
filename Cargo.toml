@@ -27,3 +27,7 @@ image = "0.24"
 [[example]]
 name = "export_to_json"
 path = "examples/export_to_json.rs"
+
+[[example]]
+name = "sim_next_runner"
+path = "examples/sim_next_runner.rs"
