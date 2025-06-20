@@ -1,6 +1,6 @@
 use atmo_rust::constants::EARTH;
 use atmo_rust::rock_store::RockStore;
-use atmo_rust::sim_next::SimNext;
+use atmo_rust::sim_next::{SimNext, SimNextProps};
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Planet: Earth");
     println!("  Steps: {}", steps);
     println!("  Database: sim_next_example.db");
+    println!("  Noise: Reduced exponential scaling for smoother initial conditions");
     println!();
 
     // Create rock store
@@ -27,10 +28,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create and initialize simulation
     println!("🔧 Creating simulation...");
-    let mut sim = SimNext::new(EARTH.clone(), store);
+    let props = SimNextProps::new(EARTH.clone(), store)
+        .with_visualization(true, 10)
+        .with_debug(true);
+    let mut sim = SimNext::new(props);
     
     println!("✅ Simulation initialized with {} cells", sim.cell_count());
     println!("🔗 Generated {} binary pairs for levelling", sim.binary_pairs.len());
+    println!("🖼️ Visualization enabled - images will export every 10 steps");
     println!();
 
     // Run the simulation

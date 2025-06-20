@@ -10,7 +10,70 @@ use crate::rock_store::RockStore;
 use h3o::CellIndex;
 use rand::Rng;
 use std::collections::HashMap;
+use std::fs;
 use uuid::Uuid;
+
+/// Configuration properties for creating a new SimNext simulation
+pub struct SimNextProps {
+    pub planet: Planet,
+    pub store: RockStore,
+    pub visualize: bool,
+    pub vis_freq: u32,
+    pub debug: bool,
+    pub seed: u64,
+    pub anomaly_freq: f64,
+    pub resolution: h3o::Resolution,
+    pub joules_per_km3: f64,
+}
+
+impl SimNextProps {
+    /// Create default props with required parameters
+    pub fn new(planet: Planet, store: RockStore) -> Self {
+        Self {
+            planet,
+            store,
+            visualize: true,
+            vis_freq: 10,
+            debug: true,
+            seed: 42,
+            anomaly_freq: ANOMALY_SPAWN_CHANCE * 5.0 / 4000.0,
+            resolution: crate::asthenosphere::ASTH_RES,
+            joules_per_km3: JOULES_PER_KM3,
+        }
+    }
+
+    /// Builder pattern methods for customization
+    pub fn with_visualization(mut self, visualize: bool, vis_freq: u32) -> Self {
+        self.visualize = visualize;
+        self.vis_freq = vis_freq;
+        self
+    }
+
+    pub fn with_debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
+
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    pub fn with_anomaly_freq(mut self, anomaly_freq: f64) -> Self {
+        self.anomaly_freq = anomaly_freq;
+        self
+    }
+
+    pub fn with_resolution(mut self, resolution: h3o::Resolution) -> Self {
+        self.resolution = resolution;
+        self
+    }
+
+    pub fn with_joules_per_km3(mut self, joules_per_km3: f64) -> Self {
+        self.joules_per_km3 = joules_per_km3;
+        self
+    }
+}
 
 /// Fast asthenosphere simulation without RefCell complexity
 pub struct SimNext {
@@ -26,30 +89,52 @@ pub struct SimNext {
     pub store: RockStore,
     pub png_exporter: Option<PngExporter>,
     pub id: String,
+
+    /// Visualization settings
+    pub visualize: bool,
+    pub vis_freq: u32,
+    pub debug: bool,
 }
 
 impl SimNext {
-    /// Create a new simulation
-    pub fn new(planet: Planet, store: RockStore) -> Self {
+    /// Create a new simulation with configuration props
+    pub fn new(props: SimNextProps) -> Self {
         let id = Uuid::new_v4().to_string();
 
         let mut sim = Self {
             cells: HashMap::new(),
             binary_pairs: Vec::new(),
             step: 0,
-            planet,
-            store,
+            planet: props.planet,
+            store: props.store,
             png_exporter: None,
             id,
+            visualize: props.visualize,
+            vis_freq: props.vis_freq,
+            debug: props.debug,
         };
 
-        // Initialize cells automatically
-        sim.initialize_cells();
+        // Initialize cells with props configuration
+        sim.initialize_cells_with_props(props.seed, props.anomaly_freq, props.resolution, props.joules_per_km3);
+        
+        // Setup visualization if enabled
+        if sim.visualize {
+            sim.setup_visualization();
+        }
+        
         sim
     }
 
-    /// Initialize cells for the planet
-    pub fn initialize_cells(&mut self) {
+
+    /// Helper method for debug printing
+    fn debug_print(&self, message: &str) {
+        if self.debug {
+            println!("{}", message);
+        }
+    }
+
+    /// Initialize cells for the planet using provided configuration
+    pub fn initialize_cells_with_props(&mut self, seed: u64, anomaly_freq: f64, resolution: h3o::Resolution, joules_per_km3: f64) {
         println!("🌍 Initializing cells for simulation...");
 
         let mut asth_cells = Vec::new();
@@ -60,10 +145,10 @@ impl SimNext {
                 asth_cells.push(cell.clone());
                 cell
             },
-            res: crate::asthenosphere::ASTH_RES,
-            joules_per_km3: JOULES_PER_KM3,
-            seed: 42,
-            anomaly_freq: ANOMALY_SPAWN_CHANCE * 5.0 / 4000.0,
+            res: resolution,
+            joules_per_km3,
+            seed: seed as u32,
+            anomaly_freq,
         };
 
         AsthenosphereCell::initial_cells_for_planet(args);
@@ -83,6 +168,24 @@ impl SimNext {
 
         println!("🌍 Initialized {} cells with {} binary pairs",
                  self.cells.len(), self.binary_pairs.len());
+    }
+
+    /// Initialize cells for the planet (backward compatibility)
+    pub fn initialize_cells(&mut self) {
+        self.initialize_cells_with_props(42, ANOMALY_SPAWN_CHANCE * 5.0 / 4000.0, crate::asthenosphere::ASTH_RES, JOULES_PER_KM3);
+    }
+
+    /// Setup visualization components
+    fn setup_visualization(&mut self) {
+        self.png_exporter = Some(PngExporter::new(720, 480, self.planet.clone()));
+
+        // Create visualization directory
+        let output_dir = "vis/sim_next";
+        if let Err(e) = fs::create_dir_all(output_dir) {
+            eprintln!("Warning: Could not create visualization directory {}: {}", output_dir, e);
+        } else {
+            println!("📁 Created visualization directory: {}", output_dir);
+        }
     }
 
     /// Generate binary pairs for efficient levelling
@@ -107,6 +210,7 @@ impl SimNext {
 
     /// Run a single simulation step
     pub fn run_step(&mut self) {
+        self.debug_print(&format!("🔄 Running step {}", self.step + 1));
 
         // 1. Level cells (equilibrate volumes/energies)
         self.level_cells();
@@ -122,11 +226,55 @@ impl SimNext {
         self.commit_step();
 
         self.step += 1;
+
+        // 5. Export visualization if needed
+        if self.visualize && self.step % self.vis_freq == 0 {
+            self.debug_print(&format!("🖼️ Exporting visualization for step {}", self.step));
+            self.export_visualization();
+        }
+    }
+
+    /// Export visualization of current simulation state
+    fn export_visualization(&mut self) {
+        // Only export if visualization is enabled and exporter exists
+        if !self.visualize || self.png_exporter.is_none() {
+            return;
+        }
+
+        self.debug_print("  📁 Preparing visualization export...");
+        let output_dir = "vis/sim_next";
+
+        // Convert simulation cells to AsthenosphereCell for rendering
+        let cells_for_export: Vec<(CellIndex, AsthenosphereCell)> = self
+            .cells
+            .iter()
+            .map(|(&cell_id, cell)| {
+                // Convert to AsthenosphereCell for export
+                let mut export_cell = cell.cell.clone();
+                // Round values for better visualization
+                export_cell.energy_j = (export_cell.energy_j / 100.0).round() * 100.0;
+                (cell_id, export_cell)
+            })
+            .collect();
+
+        self.debug_print(&format!("  🖌️ Rendering Voronoi image with {} cells...", cells_for_export.len()));
+
+        // Use the PNG exporter to render the image
+        let image = self.png_exporter.as_mut().unwrap()
+            .render_voronoi_image_from_cells(&cells_for_export);
+
+        // Save the image to file
+        self.debug_print("  💾 Saving image file...");
+        let filename = format!("{}/step_{:04}.png", output_dir, self.step);
+        match image.save(&filename) {
+            Ok(_) => self.debug_print(&format!("  ✅ Exported visualization: {}", filename)),
+            Err(e) => eprintln!("  ❌ Failed to export visualization for step {}: {}", self.step, e),
+        }
     }
 
     /// Level cells using binary pairs (simple, fast version)
     fn level_cells(&mut self) {
-        println!("⚖️  Levelling {} pairs", self.binary_pairs.len());
+        self.debug_print(&format!("⚖️ Levelling {} pairs", self.binary_pairs.len()));
 
         // Clone pairs to avoid borrowing issues
         let pairs = self.binary_pairs.clone();
@@ -134,7 +282,7 @@ impl SimNext {
             self.level_binary_pair(pair);
         }
 
-        println!("⚖️  Completed levelling");
+        self.debug_print("⚖️ Completed levelling");
     }
 
     /// Level a single binary pair using conservative volume transfer
@@ -248,7 +396,7 @@ impl SimNext {
         // Try to add anomaly (will fail if cell already has one)
         if let Some(cell) = self.cells.get_mut(&cell_id) {
             if cell.add_anomaly() {
-                println!("🌋 New anomaly spawned at cell {}", cell_id);
+                self.debug_print(&format!("🌋 New anomaly spawned at cell {}", cell_id));
             }
         }
     }
@@ -268,34 +416,6 @@ impl SimNext {
     /// Get current step
     pub fn current_step(&self) -> u32 {
         self.step
-    }
-
-    /// Add initial anomalies to 0.25% of cells
-    fn add_initial_anomalies(&mut self) {
-        let mut rng = rand::rng();
-        let cell_count = self.cells.len();
-        let anomaly_count = (cell_count as f64 * 0.0025).ceil() as usize; // 0.25%
-
-        let mut added_count = 0;
-        let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
-
-        for _ in 0..anomaly_count * 10 { // Try up to 10x to account for rejections
-            if added_count >= anomaly_count {
-                break;
-            }
-
-            let random_index = rng.random_range(0..cell_ids.len());
-            let cell_id = cell_ids[random_index];
-
-            if let Some(cell) = self.cells.get_mut(&cell_id) {
-                if cell.add_anomaly() {
-                    added_count += 1;
-                }
-            }
-        }
-
-        println!("🌋 Added {} initial anomalies to {} cells ({:.2}%)",
-                 added_count, cell_count, (added_count as f64 / cell_count as f64) * 100.0);
     }
 
     /// Calculate simulation statistics
@@ -348,12 +468,17 @@ impl SimNext {
         println!("📊 Initial Statistics:");
         self.print_statistics(&initial_stats);
 
+        // Export initial state if visualization is enabled
+        if self.visualize {
+            self.export_visualization();
+        }
+
         // Run simulation steps
-        for step in 1..=steps {
+        for _ in 1..=steps {
             self.run_step();
 
-            if step % 50 == 0 {
-                println!("⏳ Completed step {}/{}", step, steps);
+            if self.step % 50 == 0 {
+                println!("⏳ Completed step {}/{}", self.step, steps);
             }
         }
 
@@ -374,6 +499,10 @@ impl SimNext {
                  initial_stats.volume_std_dev, final_stats.volume_std_dev);
         println!("  Energy Std Dev: {:.2e} → {:.2e}",
                  initial_stats.energy_std_dev, final_stats.energy_std_dev);
+
+        if self.visualize {
+            println!("🖼️ Visualization images saved to vis/sim_next/");
+        }
     }
 }
 

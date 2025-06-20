@@ -2,7 +2,6 @@ use crate::asthenosphere::AsthenosphereCell;
 use crate::rock_store::RockStore;
 use h3o::{CellIndex, Resolution};
 use std::collections::HashMap;
-use crate::deprecated::asth_cell_update::AsthCellUpdate;
 
 pub fn erode_cells(
     base_cell: CellIndex,

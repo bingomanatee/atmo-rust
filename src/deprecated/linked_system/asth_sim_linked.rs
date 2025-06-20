@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::rc::Rc;
 use uuid::Uuid;
-use your_crate::deprecated::linked_system::asth_sim_linked::{AsthSimLinked, ASLParams};
+use crate::asl_binary_pair_leveller::{AslBinaryPairLeveller, BinaryPair};
 
 struct AsthChange {
     energy_j: f64,
@@ -231,7 +231,7 @@ impl AsthSimLinked {
                 let cloned_cell = AsthenosphereCellLinked {
                     cell: cloned_cell_data,
                     next: None,
-                    prev: None,
+                    prev: None
                 };
 
                 new_cells.insert(cell_id, Rc::new(RefCell::new(cloned_cell)));
