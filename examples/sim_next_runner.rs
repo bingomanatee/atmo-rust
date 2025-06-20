@@ -18,12 +18,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📋 Configuration:");
     println!("  Planet: Earth");
     println!("  Steps: {}", steps);
-    println!("  Database: sim_next_example.db");
+    println!("  Database: data/sim_next_example.db");
     println!("  Noise: Reduced exponential scaling for smoother initial conditions");
     println!();
 
     // Create rock store
-    let store = RockStore::open("sim_next_example.db")?;
+    let store = RockStore::open("data/sim_next_example.db")?;
     println!("💾 Database opened successfully");
 
     // Create and initialize simulation
