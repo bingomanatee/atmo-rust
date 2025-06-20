@@ -1,5 +1,4 @@
 use crate::planet::{Planet, PlanetParams};
-use crate::deprecated::plate::Plate;
 use crate::plate_generator::{GenerateRadiiParams, PartialPlateGenConfig, PlateGenerator};
 use crate::rock_store::RockStore;
 use crate::sim::{Sim, SimPlanetParams};
@@ -10,6 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use uuid::Uuid;
+use crate::plate::Plate;
 
 #[derive(Debug)]
 pub enum SimManagerError {

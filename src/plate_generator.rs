@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use crate::helpers::{rad_to_area_int, sample_power_law};
 use crate::planet::Planet;
-use crate::deprecated::plate::{Plate, PlateParams};
 use crate::vary::vary_within_range;
 use glam::Vec3;
 use rand::Rng;
@@ -9,6 +8,7 @@ use std::f64::consts::FRAC_PI_6;
 use uuid::Uuid;
 use crate::geoconverter::GeoCellConverter;
 use crate::h3_utils::PointSampler;
+use crate::plate::{Plate, PlateParams};
 
 pub struct PlateGeneratorConfig {
     pub target_coverage: f64,

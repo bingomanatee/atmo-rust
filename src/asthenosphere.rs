@@ -60,6 +60,44 @@ struct AsthenosphereCellParams {
 }
 
 impl AsthenosphereCell {
+    /// Apply smooth noise scaling to raw Perlin noise value
+    /// Uses gentle exponential curve and maps to a specified range
+    fn smooth_noise_scale(noise_value: f64, exponent: f64, min_scale: f64, max_scale: f64) -> f64 {
+        let curved_noise = if noise_value > 0.0 {
+            noise_value.powf(exponent)
+        } else {
+            -((-noise_value).powf(exponent))
+        };
+        
+        // Map [-1,1] to [min_scale, max_scale]
+        let range = max_scale - min_scale;
+        min_scale + (curved_noise + 1.0) * range / 2.0
+    }
+
+    /// Calculate initial volume for a cell based on noise
+    fn initial_volume(noise: &Perlin, location: Vec3, noise_scale: f32) -> f64 {
+        let scaled_location = location.normalize() * noise_scale;
+        let noise_val = noise.get(scaled_location.to_array().map(|n| n as f64));
+
+        // Gentler variation: 0.7x to 1.3x the base volume
+        let random_scale = Self::smooth_noise_scale(noise_val, 0.5, 0.7, 1.3);
+        AVG_STARTING_VOLUME_KM_3 * random_scale
+    }
+
+    /// Calculate initial energy per volume for a cell based on independent noise
+    fn initial_energy_j(noise: &Perlin, location: Vec3, noise_scale: f32, base_energy_per_volume: f64) -> f64 {
+        let scaled_location = location.normalize() * noise_scale;
+        let perlin_value = noise.get([
+            scaled_location.x as f64, 
+            scaled_location.y as f64, 
+            scaled_location.z as f64
+        ]);
+        
+        // Gentler energy variation: 0.8x to 1.2x base energy per volume
+        let energy_scale = Self::smooth_noise_scale(perlin_value, 0.3, 0.8, 1.2);
+        base_energy_per_volume * energy_scale
+    }
+
     /**
         this utility method creates a series of Asthenosphere cells for each cell in an h3 grid
         given a planet and resolution and feed it back to the callback;
@@ -83,36 +121,11 @@ impl AsthenosphereCell {
         let mut index = 0u32;
         H3Utils::iter_at(res, |l2_cell| {
             let location = gc.cell_to_vec3(l2_cell);
-            let noise_scale = 25.0;
-            let scaled_location = location.normalize() * noise_scale as f32;
-            let noise_val = per.get(scaled_location.to_array().map(|n| n as f64));
-
-            let exponential_noise = if noise_val > 0.0 {
-                noise_val.powf(2.0) // Less extreme exponent for smoother variation
-            } else {
-                -((-noise_val).powf(2.0))
-            };
-
-            // Much more extreme variation: 0.3x to 2.5x the base volume
-            let random_scale = 0.3 + (exponential_noise + 1.0) * 0.7; // Maps [-1,1] to [0.3, 2.5]
-            let volume = AVG_STARTING_VOLUME_KM_3 * random_scale as f64;
+            let noise_scale = 5.0;
             
-            // Add independent energy variation using different noise parameters
-            let energy_noise_val = per.get([
-                (scaled_location.x * 1.7) as f64, 
-                (scaled_location.y * 1.7) as f64, 
-                (scaled_location.z * 1.7) as f64
-            ]);
-            
-            let energy_exponential_noise = if energy_noise_val > 0.0 {
-                energy_noise_val.powf(1.5)
-            } else {
-                -((-energy_noise_val).powf(1.5))
-            };
-            
-            // Independent energy variation: 0.2x to 3.0x base energy per volume
-            let energy_scale = 0.2 + (energy_exponential_noise + 1.0) * 0.8; // Maps [-1,1] to [0.2, 3.0]
-            let adjusted_energy_per_volume = energy_per_volume * energy_scale;
+            // Calculate volume and energy using utility methods
+            let volume = Self::initial_volume(&per, location, noise_scale);
+            let adjusted_energy_per_volume = Self::initial_energy_j(&per, location, noise_scale, energy_per_volume);
             
             let asth_cell = AsthenosphereCell::at_cell(AsthenosphereCellParams {
                 cell: l2_cell,

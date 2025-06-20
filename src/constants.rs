@@ -18,7 +18,7 @@ pub const AVG_STARTING_VOLUME_KM_3: f64 = 1217830.0;
 pub const JOULES_PER_KM3: f64 = CELL_JOULES_START / AVG_STARTING_VOLUME_KM_3;
 
 pub const AVG_VOLUME_TO_ADD: f64 = 0.0325;
-pub const LEVEL_AMT: f64 = 1.0; // 100% equilibration rate, adjusted for ~6 neighbors per cell in binary pair leveller
+pub const LEVEL_AMT: f64 = 0.2; // 100% equilibration rate, adjusted for ~6 neighbors per cell in binary pair leveller
 pub const STANDARD_STEPS: u32 = 500;
 
 // Anomaly (flow) constants - reduced magnitude to not overwhelm cooling
