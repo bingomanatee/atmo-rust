@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create and initialize simulation
     println!("🔧 Creating simulation...");
     let props = SimNextProps::new(EARTH.clone(), store)
-        .with_visualization(true, 20)
+        .with_visualization(false, 0)
         .with_database_saving(false)
         .with_debug(false);
     let mut sim = SimNext::new(props);

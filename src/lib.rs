@@ -22,6 +22,9 @@ pub mod sim_next;
 #[cfg(test)]
 mod sim_next_test;
 
+#[cfg(test)]
+mod volcano_bias_test;
+
 // Deprecated linked system (preserved for reference)
 mod asth_mutate;
 mod plate;

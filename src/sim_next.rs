@@ -1,9 +1,7 @@
-use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs};
 use crate::asth_cell_next::AsthenosphereCellNext;
+use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs, ASTH_RES};
 use crate::binary_pair::BinaryPair;
-use crate::constants::{
-    ANOMALY_SPAWN_CHANCE, JOULES_PER_KM3,
-};
+use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME};
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
 use crate::rock_store::RockStore;
@@ -21,9 +19,9 @@ pub struct SimNextProps {
     pub vis_freq: u32,
     pub debug: bool,
     pub seed: u64,
-    pub anomaly_freq: f64,
     pub resolution: h3o::Resolution,
     pub joules_per_km3: f64,
+    pub save_to_db: bool,
 }
 
 impl SimNextProps {
@@ -36,9 +34,9 @@ impl SimNextProps {
             vis_freq: 10,
             debug: true,
             seed: 42,
-            anomaly_freq: ANOMALY_SPAWN_CHANCE * 5.0 / 4000.0,
             resolution: crate::asthenosphere::ASTH_RES,
             joules_per_km3: JOULES_PER_KM3,
+            save_to_db: true,
         }
     }
 
@@ -59,11 +57,6 @@ impl SimNextProps {
         self
     }
 
-    pub fn with_anomaly_freq(mut self, anomaly_freq: f64) -> Self {
-        self.anomaly_freq = anomaly_freq;
-        self
-    }
-
     pub fn with_resolution(mut self, resolution: h3o::Resolution) -> Self {
         self.resolution = resolution;
         self
@@ -71,6 +64,11 @@ impl SimNextProps {
 
     pub fn with_joules_per_km3(mut self, joules_per_km3: f64) -> Self {
         self.joules_per_km3 = joules_per_km3;
+        self
+    }
+
+    pub fn with_database_saving(mut self, save_to_db: bool) -> Self {
+        self.save_to_db = save_to_db;
         self
     }
 }
@@ -94,6 +92,7 @@ pub struct SimNext {
     pub visualize: bool,
     pub vis_freq: u32,
     pub debug: bool,
+    pub save_to_db: bool,
 }
 
 impl SimNext {
@@ -112,19 +111,20 @@ impl SimNext {
             visualize: props.visualize,
             vis_freq: props.vis_freq,
             debug: props.debug,
+            save_to_db: props.save_to_db,
         };
 
-        // Initialize cells with props configuration
-        sim.initialize_cells_with_props(props.seed, props.anomaly_freq, props.resolution, props.joules_per_km3);
-        
-        // Setup visualization if enabled
+        sim.initialize_cells_with_props(
+            props.seed,
+            props.resolution,
+            props.joules_per_km3,
+        );
         if sim.visualize {
             sim.setup_visualization();
         }
-        
+
         sim
     }
-
 
     /// Helper method for debug printing
     fn debug_print(&self, message: &str) {
@@ -134,7 +134,12 @@ impl SimNext {
     }
 
     /// Initialize cells for the planet using provided configuration
-    pub fn initialize_cells_with_props(&mut self, seed: u64, anomaly_freq: f64, resolution: h3o::Resolution, joules_per_km3: f64) {
+    pub fn initialize_cells_with_props(
+        &mut self,
+        seed: u64,
+        resolution: h3o::Resolution,
+        joules_per_km3: f64,
+    ) {
         println!("🌍 Initializing cells for simulation...");
 
         let mut asth_cells = Vec::new();
@@ -148,8 +153,8 @@ impl SimNext {
             res: resolution,
             joules_per_km3,
             seed: seed as u32,
-            anomaly_freq,
         };
+        println!(" -------- volcano max volume = {}", VOLCANO_MAX_VOLUME);
 
         AsthenosphereCell::initial_cells_for_planet(args);
         println!("🌍 Generated {} asthenosphere cells", asth_cells.len());
@@ -163,26 +168,34 @@ impl SimNext {
             })
             .collect();
 
-        // Generate binary pairs
         self.generate_binary_pairs();
 
-        println!("🌍 Initialized {} cells with {} binary pairs",
-                 self.cells.len(), self.binary_pairs.len());
+        println!(
+            "🌍 Initialized {} cells with {} binary pairs",
+            self.cells.len(),
+            self.binary_pairs.len()
+        );
     }
 
     /// Initialize cells for the planet (backward compatibility)
     pub fn initialize_cells(&mut self) {
-        self.initialize_cells_with_props(42, ANOMALY_SPAWN_CHANCE * 5.0 / 4000.0, crate::asthenosphere::ASTH_RES, JOULES_PER_KM3);
+        self.initialize_cells_with_props(
+            42,
+            crate::asthenosphere::ASTH_RES,
+            JOULES_PER_KM3,
+        );
     }
 
     /// Setup visualization components
     fn setup_visualization(&mut self) {
         self.png_exporter = Some(PngExporter::new(720, 480, self.planet.clone()));
 
-        // Create visualization directory
         let output_dir = "vis/sim_next";
         if let Err(e) = fs::create_dir_all(output_dir) {
-            eprintln!("Warning: Could not create visualization directory {}: {}", output_dir, e);
+            eprintln!(
+                "Warning: Could not create visualization directory {}: {}",
+                output_dir, e
+            );
         } else {
             println!("📁 Created visualization directory: {}", output_dir);
         }
@@ -207,9 +220,28 @@ impl SimNext {
         // Convert HashMap values to Vector
         self.binary_pairs = pairs_map.into_values().collect();
     }
+    
+    fn back_fill(&mut self) {
+        let cell_list: Vec<AsthenosphereCellNext> = self.cells.clone().into_values().collect();
+        for mut cell in cell_list {
+            let mut in_or_near_anomaly = cell.has_any_anomaly();
+            
+            for  neighbor_id in cell.clone().cell.neighbors {
+                let next = self.cells.get(&neighbor_id).unwrap();
+                if next.has_any_anomaly() {
+                    in_or_near_anomaly = true;
+                }
+            }
+            if !in_or_near_anomaly {
+                cell.back_fill();
+            } 
+        }
+    }
 
     /// Run a single simulation step
     pub fn run_step(&mut self) {
+        
+        self.back_fill();
         self.debug_print(&format!("🔄 Running step {}", self.step + 1));
 
         // 1. Level cells (equilibrate volumes/energies)
@@ -219,8 +251,8 @@ impl SimNext {
         self.cool_cells();
 
         // 3. Process existing anomalies and potentially add new ones
-        self.process_anomalies();
-        self.try_add_new_anomaly();
+        self.process_volcanoes_and_sinkholes();
+        self.try_spawn_volcanoes_and_sinkholes();
 
         // 4. Commit next state to current state
         self.commit_step();
@@ -229,14 +261,16 @@ impl SimNext {
 
         // 5. Export visualization if needed
         if self.visualize && self.step % self.vis_freq == 0 {
-            self.debug_print(&format!("🖼️ Exporting visualization for step {}", self.step));
+            self.debug_print(&format!(
+                "🖼️ Exporting visualization for step {}",
+                self.step
+            ));
             self.export_visualization();
         }
     }
 
     /// Export visualization of current simulation state
     fn export_visualization(&mut self) {
-        // Only export if visualization is enabled and exporter exists
         if !self.visualize || self.png_exporter.is_none() {
             return;
         }
@@ -249,26 +283,31 @@ impl SimNext {
             .cells
             .iter()
             .map(|(&cell_id, cell)| {
-                // Convert to AsthenosphereCell for export
                 let mut export_cell = cell.cell.clone();
-                // Round values for better visualization
                 export_cell.energy_j = (export_cell.energy_j / 100.0).round() * 100.0;
                 (cell_id, export_cell)
             })
             .collect();
 
-        self.debug_print(&format!("  🖌️ Rendering Voronoi image with {} cells...", cells_for_export.len()));
+        self.debug_print(&format!(
+            "  🖌️ Rendering Voronoi image with {} cells...",
+            cells_for_export.len()
+        ));
 
-        // Use the PNG exporter to render the image
-        let image = self.png_exporter.as_mut().unwrap()
+        let image = self
+            .png_exporter
+            .as_mut()
+            .unwrap()
             .render_voronoi_image_from_cells(&cells_for_export);
 
-        // Save the image to file
         self.debug_print("  💾 Saving image file...");
         let filename = format!("{}/step_{:04}.png", output_dir, self.step);
         match image.save(&filename) {
             Ok(_) => self.debug_print(&format!("  ✅ Exported visualization: {}", filename)),
-            Err(e) => eprintln!("  ❌ Failed to export visualization for step {}: {}", self.step, e),
+            Err(e) => eprintln!(
+                "  ❌ Failed to export visualization for step {}: {}",
+                self.step, e
+            ),
         }
     }
 
@@ -276,7 +315,6 @@ impl SimNext {
     fn level_cells(&mut self) {
         self.debug_print(&format!("⚖️ Levelling {} pairs", self.binary_pairs.len()));
 
-        // Clone pairs to avoid borrowing issues
         let pairs = self.binary_pairs.clone();
         for pair in &pairs {
             self.level_binary_pair(pair);
@@ -287,7 +325,6 @@ impl SimNext {
 
     /// Level a single binary pair using conservative volume transfer
     fn level_binary_pair(&mut self, pair: &BinaryPair) {
-        // Determine which cell has higher volume first
         let (higher_id, lower_id) = {
             let vol_a = match self.cells.get(&pair.cell_a) {
                 Some(cell) => cell.next_cell.volume,
@@ -298,11 +335,6 @@ impl SimNext {
                 None => return,
             };
 
-            // Early termination if volume difference is too small
-            if (vol_a - vol_b).abs() < 1.0 {
-                return;
-            }
-
             if vol_a > vol_b {
                 (pair.cell_a, pair.cell_b)
             } else {
@@ -310,93 +342,92 @@ impl SimNext {
             }
         };
 
-        // Clone the pair and perform transfer operations
-        let (mut higher_cell, mut lower_cell) = (self.cells[&higher_id].clone(), self.cells[&lower_id].clone());
+        let (mut higher_cell, mut lower_cell) = (
+            self.cells[&higher_id].clone(),
+            self.cells[&lower_id].clone(),
+        );
 
-        // Calculate equilibrium and transfer amount
         let total_volume = higher_cell.next_cell.volume + lower_cell.next_cell.volume;
         let equilibrium_volume = total_volume / 2.0;
         let excess = higher_cell.next_cell.volume - equilibrium_volume;
 
-        // Scale transfer for multiple neighbors (assume ~6 neighbors per cell)
-        let transfer_amount = excess * 0.16; // 1.0 / 6.0 ≈ 0.16
+        let transfer_amount = excess * 0.25;
 
-        if transfer_amount < 0.1 {
-            return;
-        }
+        higher_cell
+            .next_cell
+            .transfer_volume(transfer_amount, &mut lower_cell.next_cell);
 
-        // Perform downstream transfer from higher to lower on clones
-        higher_cell.next_cell.transfer_volume(transfer_amount, &mut lower_cell.next_cell);
-
-        // Update the HashMap with the modified cells
         self.cells.insert(higher_id, higher_cell);
         self.cells.insert(lower_id, lower_cell);
     }
 
-
-
-    /// Cool all cells
+    /// Cool all cells with Perlin heating from below
     fn cool_cells(&mut self) {
         for cell in self.cells.values_mut() {
-            cell.cool();
+            cell.cool_with_heating(&self.planet, self.step, ASTH_RES);
         }
     }
 
-    /// Process existing anomalies in all cells
-    fn process_anomalies(&mut self) {
-        // Clone cell IDs to avoid borrowing conflicts
+    fn process_volcanoes_and_sinkholes(&mut self) {
         let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
 
         for cell_id in cell_ids {
-            // Check if this cell has a strong anomaly that should propagate
-            let (should_propagate, neighbor_ids, volume_per_neighbor) = {
-                let cell = &self.cells[&cell_id];
-                if cell.next_cell.anomaly_volume.abs() > 10.0 && !cell.cell.neighbors.is_empty() {
-                    let volume_per_neighbor = cell.next_cell.anomaly_volume / cell.cell.neighbors.len() as f64;
-                    (true, cell.cell.neighbors.clone(), volume_per_neighbor)
-                } else {
-                    (false, vec![], 0.0)
-                }
-            };
-
-            // Process the anomaly for this cell
             if let Some(cell) = self.cells.get_mut(&cell_id) {
-                cell.process_anomaly();
+                cell.process_volcanoes_and_sinkholes();
             }
+        }
+    }
 
-            // Propagate to neighbors immediately
-            if should_propagate {
-                for neighbor_id in neighbor_ids {
-                    if let Some(neighbor_cell) = self.cells.get_mut(&neighbor_id) {
-                        neighbor_cell.volume_from_anomaly(volume_per_neighbor);
+    fn try_spawn_volcanoes_and_sinkholes(&mut self) {
+        let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
+        let mut volcano_clusters = Vec::new();
+        let mut sinkhole_clusters = Vec::new();
+        let mut volcano_spawns = Vec::new();
+        let mut sinkhole_spawns = Vec::new();
+
+        for cell_id in &cell_ids {
+            if let Some(cell) = self.cells.get_mut(cell_id) {
+                if let Some(cluster) = cell.try_create_volcano_cluster() {
+                    volcano_spawns.push((*cell_id, format!("cluster with {} volcanoes", cluster.len())));
+                    volcano_clusters.push(cluster);
+                } else if cell.try_add_volcano() {
+                    volcano_spawns.push((*cell_id, "single volcano".to_string()));
+                }
+
+                if let Some(cluster) = cell.try_create_massive_sink_event() {
+                    sinkhole_spawns.push((*cell_id, format!("massive sink affecting {} neighbors", cluster.len())));
+                    sinkhole_clusters.push(cluster);
+                } else if cell.try_add_sinkhole() {
+                    sinkhole_spawns.push((*cell_id, "single sinkhole".to_string()));
+                }
+            }
+        }
+
+        for (cell_id, description) in volcano_spawns {
+            self.debug_print(&format!("🌋 Volcano {} spawned at cell {}", description, cell_id));
+        }
+
+        for (cell_id, description) in sinkhole_spawns {
+            self.debug_print(&format!("🕳️ Sinkhole {} spawned at cell {}", description, cell_id));
+        }
+
+        for cluster in volcano_clusters {
+            for (neighbor_id, volume) in cluster {
+                if let Some(neighbor_cell) = self.cells.get_mut(&neighbor_id) {
+                    if !neighbor_cell.has_sinkhole() {
+                        neighbor_cell.add_volcano_with_volume(volume);
                     }
                 }
             }
         }
-    }
 
-    /// Try to add a new anomaly based on spawn chance
-    fn try_add_new_anomaly(&mut self) {
-        let mut rng = rand::rng();
-
-        // Check spawn chance
-        if rng.random::<f64>() > ANOMALY_SPAWN_CHANCE {
-            return; // No anomaly this step
-        }
-
-        // Select a random cell
-        let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
-        if cell_ids.is_empty() {
-            return;
-        }
-
-        let random_index = rng.random_range(0..cell_ids.len());
-        let cell_id = cell_ids[random_index];
-
-        // Try to add anomaly (will fail if cell already has one)
-        if let Some(cell) = self.cells.get_mut(&cell_id) {
-            if cell.add_anomaly() {
-                self.debug_print(&format!("🌋 New anomaly spawned at cell {}", cell_id));
+        for cluster in sinkhole_clusters {
+            for (neighbor_id, volume) in cluster {
+                if let Some(neighbor_cell) = self.cells.get_mut(&neighbor_id) {
+                    if !neighbor_cell.has_volcano() {
+                        neighbor_cell.add_sinkhole_with_volume(volume);
+                    }
+                }
             }
         }
     }
@@ -420,8 +451,16 @@ impl SimNext {
 
     /// Calculate simulation statistics
     fn calculate_statistics(&self) -> SimulationStats {
-        let volumes: Vec<f64> = self.cells.values().map(|cell| cell.next_cell.volume).collect();
-        let energies: Vec<f64> = self.cells.values().map(|cell| cell.next_cell.energy_j).collect();
+        let volumes: Vec<f64> = self
+            .cells
+            .values()
+            .map(|cell| cell.next_cell.volume)
+            .collect();
+        let energies: Vec<f64> = self
+            .cells
+            .values()
+            .map(|cell| cell.next_cell.energy_j)
+            .collect();
 
         let total_volume: f64 = volumes.iter().sum();
         let total_energy: f64 = energies.iter().sum();
@@ -430,12 +469,16 @@ impl SimNext {
         let avg_volume = total_volume / cell_count;
         let avg_energy = total_energy / cell_count;
 
-        let volume_variance: f64 = volumes.iter()
+        let volume_variance: f64 = volumes
+            .iter()
             .map(|v| (v - avg_volume).powi(2))
-            .sum::<f64>() / cell_count;
-        let energy_variance: f64 = energies.iter()
+            .sum::<f64>()
+            / cell_count;
+        let energy_variance: f64 = energies
+            .iter()
             .map(|e| (e - avg_energy).powi(2))
-            .sum::<f64>() / cell_count;
+            .sum::<f64>()
+            / cell_count;
 
         SimulationStats {
             total_volume,
@@ -463,17 +506,14 @@ impl SimNext {
     pub fn run_simulation(&mut self, steps: u32) {
         println!("🚀 Starting simulation for {} steps", steps);
 
-        // Calculate initial statistics
         let initial_stats = self.calculate_statistics();
         println!("📊 Initial Statistics:");
         self.print_statistics(&initial_stats);
 
-        // Export initial state if visualization is enabled
         if self.visualize {
             self.export_visualization();
         }
 
-        // Run simulation steps
         for _ in 1..=steps {
             self.run_step();
 
@@ -482,23 +522,33 @@ impl SimNext {
             }
         }
 
-        // Calculate final statistics
         let final_stats = self.calculate_statistics();
         println!("📊 Final Statistics:");
         self.print_statistics(&final_stats);
 
-        // Print comparison
         println!("📈 Changes:");
-        println!("  Volume: {:.2} → {:.2} ({:+.2}%)",
-                 initial_stats.total_volume, final_stats.total_volume,
-                 ((final_stats.total_volume - initial_stats.total_volume) / initial_stats.total_volume) * 100.0);
-        println!("  Energy: {:.2e} → {:.2e} ({:+.2}%)",
-                 initial_stats.total_energy, final_stats.total_energy,
-                 ((final_stats.total_energy - initial_stats.total_energy) / initial_stats.total_energy) * 100.0);
-        println!("  Volume Std Dev: {:.2} → {:.2}",
-                 initial_stats.volume_std_dev, final_stats.volume_std_dev);
-        println!("  Energy Std Dev: {:.2e} → {:.2e}",
-                 initial_stats.energy_std_dev, final_stats.energy_std_dev);
+        println!(
+            "  Volume: {:.2} → {:.2} ({:+.2}%)",
+            initial_stats.total_volume,
+            final_stats.total_volume,
+            ((final_stats.total_volume - initial_stats.total_volume) / initial_stats.total_volume)
+                * 100.0
+        );
+        println!(
+            "  Energy: {:.2e} → {:.2e} ({:+.2}%)",
+            initial_stats.total_energy,
+            final_stats.total_energy,
+            ((final_stats.total_energy - initial_stats.total_energy) / initial_stats.total_energy)
+                * 100.0
+        );
+        println!(
+            "  Volume Std Dev: {:.2} → {:.2}",
+            initial_stats.volume_std_dev, final_stats.volume_std_dev
+        );
+        println!(
+            "  Energy Std Dev: {:.2e} → {:.2e}",
+            initial_stats.energy_std_dev, final_stats.energy_std_dev
+        );
 
         if self.visualize {
             println!("🖼️ Visualization images saved to vis/sim_next/");

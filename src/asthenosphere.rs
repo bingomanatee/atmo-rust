@@ -20,7 +20,8 @@ pub(crate) struct AsthenosphereCell {
     pub step: u32,
     pub volume: f64,   // c. 2 MIO KM3 per
     pub energy_j: f64, // Temp in kelvin; each unit of volume adds 2073, cools by 20 per MIO years
-    pub anomaly_volume: f64, // Additional volume from anomalies (flows)
+    pub volcano_volume: f64, // Additional volume from volcanic activity
+    pub sinkhole_volume: f64, // Volume removed by sinkhole activity
 }
 
 impl Default for AsthenosphereCell {
@@ -32,7 +33,8 @@ impl Default for AsthenosphereCell {
             energy_j: 0.0,
             neighbors: Vec::new(),
             step: 0,
-            anomaly_volume: 0.0,
+            volcano_volume: 0.0,
+            sinkhole_volume: 0.0,
         }
     }
 }
@@ -49,7 +51,6 @@ where
     pub res: Resolution,
     pub joules_per_km3: f64,
     pub seed: u32,
-    pub anomaly_freq: f64, // Frequency of initial anomalies (0.0 to 1.0)
 }
 
 #[derive(Clone)]
@@ -80,7 +81,7 @@ impl AsthenosphereCell {
         let noise_val = noise.get(scaled_location.to_array().map(|n| n as f64));
 
         // Gentler variation: 0.7x to 1.3x the base volume
-        let random_scale = Self::smooth_noise_scale(noise_val, 0.5, 0.7, 1.3);
+        let random_scale = Self::smooth_noise_scale(noise_val, 0.8, 0.9, 1.1);
         AVG_STARTING_VOLUME_KM_3 * random_scale
     }
 
@@ -94,7 +95,7 @@ impl AsthenosphereCell {
         ]);
         
         // Gentler energy variation: 0.8x to 1.2x base energy per volume
-        let energy_scale = Self::smooth_noise_scale(perlin_value, 0.3, 0.8, 1.2);
+        let energy_scale = Self::smooth_noise_scale(perlin_value, 0.3, 0.9, 1.1);
         base_energy_per_volume * energy_scale
     }
 
@@ -113,7 +114,6 @@ impl AsthenosphereCell {
             res,
             joules_per_km3: energy_per_volume,
             seed,
-            anomaly_freq,
         } = args;
         let resolution = res;
         let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
@@ -159,7 +159,8 @@ impl AsthenosphereCell {
                 .into_iter()
                 .filter(|&c| c != params.cell)
                 .collect::<Vec<CellIndex>>(),
-            anomaly_volume: 0.0,
+            volcano_volume: 0.0,
+            sinkhole_volume: 0.0,
         }
     }
 
