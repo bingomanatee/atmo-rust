@@ -2,6 +2,7 @@ use crate::asth_cell_next::AsthenosphereCellNext;
 use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs, ASTH_RES};
 use crate::binary_pair::BinaryPair;
 use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME};
+use crate::convection::Convection;
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
 use crate::rock_store::RockStore;
@@ -81,6 +82,9 @@ pub struct SimNext {
     /// Binary pairs for levelling (precomputed for efficiency)
     pub binary_pairs: Vec<BinaryPair>,
 
+    /// Global convection system for material addition/subtraction
+    pub convection: Convection,
+
     /// Simulation metadata
     pub step: u32,
     pub planet: Planet,
@@ -103,6 +107,7 @@ impl SimNext {
         let mut sim = Self {
             cells: HashMap::new(),
             binary_pairs: Vec::new(),
+            convection: Convection::new(props.seed as u32, 5882), // Will be updated after initialization
             step: 0,
             planet: props.planet,
             store: props.store,
@@ -170,10 +175,20 @@ impl SimNext {
 
         self.generate_binary_pairs();
 
+        // Initialize convection with correct cell count
+        self.convection = Convection::new(seed as u32, self.cells.len());
+
         println!(
             "🌍 Initialized {} cells with {} binary pairs",
             self.cells.len(),
             self.binary_pairs.len()
+        );
+        println!(
+            "🌪️ Convection system initialized: +{:.1}% -{:.1}% (unaffected: {:.1}%, balanced: {})",
+            self.convection.addition_fraction * 100.0,
+            self.convection.subtraction_fraction * 100.0,
+            self.convection.unaffected_percentage() * 100.0,
+            self.convection.is_balanced()
         );
     }
 
@@ -254,7 +269,10 @@ impl SimNext {
         self.process_volcanoes_and_sinkholes();
         self.try_spawn_volcanoes_and_sinkholes();
 
-        // 4. Commit next state to current state
+        // 4. Apply global convection (final step)
+        self.apply_convection();
+
+        // 5. Commit next state to current state
         self.commit_step();
 
         self.step += 1;
@@ -429,6 +447,19 @@ impl SimNext {
                     }
                 }
             }
+        }
+    }
+
+    /// Apply global convection to all cells
+    fn apply_convection(&mut self) {
+        self.debug_print("🌪️ Applying global convection");
+        
+        for cell in self.cells.values_mut() {
+            self.convection.apply_convection(
+                &mut cell.next_cell,
+                &self.planet,
+                ASTH_RES
+            );
         }
     }
 

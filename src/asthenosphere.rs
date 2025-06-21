@@ -263,7 +263,6 @@ mod tests {
             },
             res: Resolution::Two,
             seed: 42,
-            anomaly_freq: 0.0, // No anomalies in test
         });
 
         assert_eq!(cell_count, 5882, "wrong cell count");

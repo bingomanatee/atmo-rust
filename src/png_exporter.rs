@@ -31,13 +31,14 @@ static COLOR_LOOKUP_TABLE: Lazy<Vec<Rgb<u8>>> = Lazy::new(|| {
 
 // Static version of energy_to_color for use in const context
 fn compute_energy_to_color_static(energy_normalized: f64) -> Rgb<u8> {
-    // Define gradient points (value must be in ascending order)
+    // Define gradient points for magma field appearance (value must be in ascending order)
     let gradient = [
-        ColorPoint { value: 0.0, color: Rgb([128, 0, 255]) },   // Purple
-        ColorPoint { value: 0.2, color: Rgb([255, 0, 0]) },     // Red
-        ColorPoint { value: 0.4, color: Rgb([255, 150, 0]) },   // Orange
-        ColorPoint { value: 0.6, color: Rgb([255, 255, 0]) },   // Yellow
-        ColorPoint { value: 0.8, color: Rgb([255, 255, 255]) }, // White
+        ColorPoint { value: 0.0, color: Rgb([0, 0, 0]) },       // Black (coldest)
+        ColorPoint { value: 0.15, color: Rgb([51, 0, 128]) },     // Black at 3.0e24 J
+        ColorPoint { value: 0.375, color: Rgb([128, 0, 25]) },     // Black at 3.0e24 J
+        ColorPoint { value: 0.6, color: Rgb([255, 0, 0]) },     // Red where yellow was (4.8e24 J)
+        ColorPoint { value: 0.8, color: Rgb([255, 255, 0]) },   // Yellow (hotter)
+        ColorPoint { value: 1.0, color: Rgb([255, 255, 255]) }, // White (hottest)
     ];
 
     // Clamp input
@@ -550,15 +551,14 @@ impl PngExporter {
         self.draw_simple_text_2x(image, "8e24", legend_x - 50, hot_y);
 
         // Intermediate labels for color transitions - moved to left side and 2x bigger
-        let white_yellow_y = legend_y + (legend_height as f64 * 0.2) as u32; // 0.8 normalized = 6.4e24
-        let yellow_orange_y = legend_y + (legend_height as f64 * 0.4) as u32; // 0.6 normalized = 4.8e24
-        let orange_red_y = legend_y + (legend_height as f64 * 0.6) as u32;   // 0.4 normalized = 3.2e24
-        let red_purple_y = legend_y + (legend_height as f64 * 0.8) as u32;   // 0.2 normalized = 1.6e24
+        let white_y = legend_y + (legend_height as f64 * 0.0) as u32;     // 1.0 normalized = 8.0e24 (white)
+        let yellow_y = legend_y + (legend_height as f64 * 0.2) as u32;    // 0.8 normalized = 6.4e24 (yellow)
+        let red_y = legend_y + (legend_height as f64 * 0.4) as u32;       // 0.6 normalized = 4.8e24 (red)
+        let black_transition_y = legend_y + (legend_height as f64 * 0.625) as u32; // 0.375 normalized = 3.0e24 (black)
 
-        self.draw_simple_text_2x(image, "6.4", legend_x - 40, white_yellow_y);
-        self.draw_simple_text_2x(image, "4.8", legend_x - 40, yellow_orange_y);
-        self.draw_simple_text_2x(image, "3.2", legend_x - 40, orange_red_y);
-        self.draw_simple_text_2x(image, "1.6", legend_x - 40, red_purple_y);
+        self.draw_simple_text_2x(image, "6.4", legend_x - 40, yellow_y);
+        self.draw_simple_text_2x(image, "4.8", legend_x - 40, red_y);
+        self.draw_simple_text_2x(image, "3.0", legend_x - 40, black_transition_y);
 
         // Bottom label (coldest) - moved to left side and 2x bigger
         self.draw_simple_text_2x(image, "0e24", legend_x - 50, cold_y);

@@ -59,5 +59,9 @@ pub const BACK_FILL_LEVEL: f64 = 0.8;
 pub const BACK_FILL_RATE: f64 = 0.2;
 
 // ===== Convection =====
-
 pub const GLOBAL_CONVECTION: f64 = 0.3;
+pub const CONVECTION_ADDITION_MIN: f64 = 0.1;
+pub const CONVECTION_ADDITION_MAX: f64 = 0.2;
+pub const CONVECTION_SUBTRACTION_MIN: f64 = 0.1;
+pub const CONVECTION_SUBTRACTION_MAX: f64 = 0.2;
+pub const CONVECTION_BALANCE_TOLERANCE: f64 = 0.03; // 3% tolerance between addition and subtraction

@@ -13,6 +13,7 @@ mod steps;
 pub mod constants;
 pub mod gif_exporter;
 pub mod png_exporter;
+pub mod convection;
 
 // New simulation system
 pub mod asth_cell_next;
