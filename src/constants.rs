@@ -21,14 +21,9 @@ pub const AVG_VOLUME_TO_ADD: f64 = 0.0325;
 pub const LEVEL_AMT: f64 = 0.2; // 100% equilibration rate, adjusted for ~6 neighbors per cell in binary pair leveller
 pub const STANDARD_STEPS: u32 = 500;
 
-// Anomaly (flow) constants - reduced magnitude to not overwhelm cooling
-pub const ANOMALY_SPAWN_CHANCE: f64 = 0.15; // 15% chance per cycle
-pub const ANOMALY_DECAY_RATE: f64 = 0.03; // 3% decay per step
-pub const ANOMALY_VOLUME_AMOUNT: f64 = AVG_STARTING_VOLUME_KM_3 * 0.1; // 1% of starting volume (was 10%)
-
 pub const EARTH_RADIUS_KM: i32 = 6372;
 pub const RHO_EARTH: f64 = 4.5; // g/cm³
-
+pub const VOLCANO_BIAS: f64 = 0.05;
 pub static EARTH: Planet = Planet {
     id: EARTH_ID,
     sim_id: EARTH_SIM_ID,
@@ -37,6 +32,32 @@ pub static EARTH: Planet = Planet {
 };
 
 pub static COOLING_RATE: Lazy<f64> = Lazy::new(|| {
-    let mid_target = (CELL_JOULES_EQUILIBRIUM + MAX_SUNK_TEMP)/ 2.0;
-    (mid_target/ CELL_JOULES_START).powf(1.0 / (STANDARD_STEPS as f64) )
+    let mid_target = CELL_JOULES_EQUILIBRIUM ;
+    (mid_target/ CELL_JOULES_START).powf(  1.1/ (STANDARD_STEPS as f64) )
 });
+
+// === Volcano Properties ===
+pub const VOLCANO_MIN_VOLUME: f64 = AVG_STARTING_VOLUME_KM_3 * 0.005; // ~6,089 km³
+pub const VOLCANO_MAX_VOLUME: f64 = AVG_STARTING_VOLUME_KM_3 * 0.03;  // ~24,356 km³
+pub const VOLCANO_JOULES_PER_VOLUME: f64 = JOULES_PER_KM3 * 1.5;
+
+// === Sinkhole Properties ===
+pub const SINKHOLE_MIN_VOLUME_TO_REMOVE: f64 = AVG_STARTING_VOLUME_KM_3 * 0.0001; // ~1,218 km³
+pub const SINKHOLE_MAX_VOLUME_TO_REMOVE: f64 = AVG_STARTING_VOLUME_KM_3 * 0.001; // ~6,089 km³
+
+// These are per-cell, per-step spawn probabilities.
+pub const VOLCANO_CHANCE: f64 = 0.0005;       // 1 in 2000 cells per step
+pub const SINKHOLE_CHANCE: f64 = 0.005;        // 1 in 100 cells per step
+
+// === Decay Rates ===
+// These control how fast anomalies fade each step (multiplicative decay).
+pub const VOLCANO_DECAY_RATE: f64 = 0.666;
+pub const SINKHOLE_DECAY_RATE: f64 = 0.85;
+
+// ==== Back Fill =====
+pub const BACK_FILL_LEVEL: f64 = 0.8;
+pub const BACK_FILL_RATE: f64 = 0.2;
+
+// ===== Convection =====
+
+pub const GLOBAL_CONVECTION: f64 = 0.3;

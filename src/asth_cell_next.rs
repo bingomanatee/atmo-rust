@@ -1,21 +1,24 @@
 use crate::asthenosphere::AsthenosphereCell;
-use crate::constants::{ANOMALY_DECAY_RATE, ANOMALY_VOLUME_AMOUNT, COOLING_RATE, JOULES_PER_KM3};
+use crate::constants::{
+    AVG_STARTING_VOLUME_KM_3, BACK_FILL_LEVEL, BACK_FILL_RATE, CELL_JOULES_EQUILIBRIUM,
+    COOLING_RATE, JOULES_PER_KM3, SINKHOLE_CHANCE, SINKHOLE_DECAY_RATE,
+    SINKHOLE_MAX_VOLUME_TO_REMOVE, SINKHOLE_MIN_VOLUME_TO_REMOVE, VOLCANO_BIAS, VOLCANO_CHANCE,
+    VOLCANO_DECAY_RATE,  VOLCANO_JOULES_PER_VOLUME, VOLCANO_MAX_VOLUME,
+    VOLCANO_MIN_VOLUME,
+};
+use crate::geoconverter::GeoCellConverter;
+use crate::planet::Planet;
 use h3o::CellIndex;
+use noise::{NoiseFn, Perlin};
 use rand::Rng;
 
-/// Simulation cell with current state and next state
-/// Uses full AsthenosphereCell for both states for maximum extensibility
 #[derive(Clone, Debug)]
 pub struct AsthenosphereCellNext {
-    /// Current committed asthenosphere cell state
     pub cell: AsthenosphereCell,
-
-    /// Next step asthenosphere cell state (working state)
     pub next_cell: AsthenosphereCell,
 }
 
 impl AsthenosphereCellNext {
-    /// Create a new simulation cell from an asthenosphere cell
     pub fn new(cell: AsthenosphereCell) -> Self {
         Self {
             next_cell: cell.clone(),
@@ -23,110 +26,222 @@ impl AsthenosphereCellNext {
         }
     }
 
-
-
-    /// Commit next state to current state (call at end of simulation step)
     pub fn commit_step(&mut self) {
         self.cell = self.next_cell.clone();
         self.next_cell.step = self.cell.step + 1;
     }
 
-    /// Get cell index
     pub fn cell_index(&self) -> CellIndex {
         self.cell.id
     }
 
-    /// Move volume and proportional energy to another cell (conservative binary operation)
-    /// Returns true if transfer occurred, false if no transfer (invalid volume or insufficient source)
     pub fn move_volume_to(&mut self, other: &mut AsthenosphereCellNext, volume: f64) -> bool {
         self.next_cell.transfer_volume(volume, &mut other.next_cell)
     }
 
-    /// Move a percentage of volume to another cell
-    /// Returns true if transfer occurred, false if no transfer
-    pub fn move_volume_fraction_to(&mut self, other: &mut AsthenosphereCellNext, fraction: f64) -> bool {
-        self.next_cell.transfer_volume_fraction(fraction, &mut other.next_cell)
+    pub fn move_volume_fraction_to(
+        &mut self,
+        other: &mut AsthenosphereCellNext,
+        fraction: f64,
+    ) -> bool {
+        self.next_cell
+            .transfer_volume_fraction(fraction, &mut other.next_cell)
     }
 
-    /// Cool the cell using the global cooling rate
+    pub fn cool_with_heating(&mut self, planet: &Planet, step: u32, resolution: h3o::Resolution) {
+        self.next_cell.energy_j *= *COOLING_RATE;
+        //  let heating_energy = Self::calculate_perlin_heating(self.cell_index(), planet, step, resolution);
+        //  self.next_cell.energy_j += heating_energy;
+    }
+
+    pub fn back_fill(&mut self) {
+        if self.has_any_anomaly() {
+            return;
+        }
+
+        let trigger_rate = AVG_STARTING_VOLUME_KM_3 * BACK_FILL_LEVEL;
+        if (self.cell.volume < trigger_rate) {
+            let diff = trigger_rate - self.cell.volume;
+            let back_fill = diff * BACK_FILL_RATE;
+            self.next_cell.volume += back_fill;
+            self.next_cell.energy_j += back_fill * JOULES_PER_KM3;
+        }
+    }
+
+    fn calculate_perlin_heating(
+        cell_index: CellIndex,
+        planet: &Planet,
+        step: u32,
+        resolution: h3o::Resolution,
+    ) -> f64 {
+        let noise_seed = (step % 1000) as u32;
+        let noise = Perlin::new(noise_seed);
+        let gc = GeoCellConverter::new(planet.radius_km as f64, resolution);
+        let location = gc.cell_to_vec3(cell_index);
+        let noise_scale = 10.0;
+        let scaled_location = location.normalize() * noise_scale;
+        let noise_value = noise.get([
+            scaled_location.x as f64,
+            scaled_location.y as f64,
+            scaled_location.z as f64,
+        ]);
+
+        // lower the temperature a bit to allow for excess energy aded by volcano bias
+        let base_heating = (1.0 - *COOLING_RATE) * CELL_JOULES_EQUILIBRIUM * (1.0 - VOLCANO_BIAS);
+        let variation = 1.0 + (noise_value * 0.02);
+        base_heating * variation
+    }
+
     pub fn cool(&mut self) {
         self.next_cell.energy_j *= *COOLING_RATE;
     }
 
-    /// Try to add a new anomaly to this cell
-    /// Returns false if cell already has an anomaly (no new anomaly added)
-    /// Returns true if a new anomaly was successfully added
-    pub fn add_anomaly(&mut self) -> bool {
-        // Return false if cell already has an anomaly
-        if self.has_anomaly() {
+    pub fn try_add_volcano(&mut self) -> bool {
+        if self.has_volcano() {
             return false;
         }
 
-        // Generate random anomaly parameters using constants
         let mut rng = rand::rng();
-        let is_volcano = rng.random_bool(0.5); // 50/50 chance volcano vs sinkhole
-        let intensity_factor = rng.random_range(0.1..=1.0); // 10% to 100% of base amount
+        if rng.random::<f64>() > VOLCANO_CHANCE {
+            return false;
+        }
 
-        let volume_change = if is_volcano {
-            ANOMALY_VOLUME_AMOUNT * intensity_factor
-        } else {
-            -ANOMALY_VOLUME_AMOUNT * intensity_factor
-        };
-
-        // Add the anomaly (energy will be derived when volume is applied)
-        self.next_cell.anomaly_volume = volume_change;
-
+        let volume = rng.random_range(VOLCANO_MIN_VOLUME..=VOLCANO_MAX_VOLUME);
+        self.next_cell.volcano_volume = volume;
         true
     }
 
-
-
-    /// Check if this cell has an active anomaly
-    pub fn has_anomaly(&self) -> bool {
-        self.next_cell.anomaly_volume.abs() > 1e-10
-    }
-
-    /// Apply and decay existing anomaly effects
-    pub fn process_anomaly(&mut self) {
-        if self.next_cell.anomaly_volume.abs() < 1e-10 {
-            return; // No anomaly to process
+    pub fn try_add_sinkhole(&mut self) -> bool {
+        if self.has_sinkhole() {
+            return false;
         }
 
-        // Apply the anomaly effect to volume and derive energy automatically
-        let volume_change = self.next_cell.anomaly_volume;
-        self.next_cell.volume = (self.next_cell.volume + volume_change).max(0.0);
-        self.next_cell.energy_j = (self.next_cell.energy_j + volume_change * JOULES_PER_KM3).max(0.0);
+        let mut rng = rand::rng();
+        if rng.random::<f64>() > SINKHOLE_CHANCE {
+            return false;
+        }
 
-        // Decay the anomaly
-        self.next_cell.anomaly_volume *= 1.0 - ANOMALY_DECAY_RATE;
+        let volume_to_remove =
+            rng.random_range(SINKHOLE_MIN_VOLUME_TO_REMOVE..=SINKHOLE_MAX_VOLUME_TO_REMOVE);
+        self.next_cell.sinkhole_volume = volume_to_remove;
+        true
+    }
 
-        // Clear anomaly if it's become negligible
-        if self.next_cell.anomaly_volume.abs() < 1e-10 {
-            self.next_cell.anomaly_volume = 0.0;
+    pub fn add_volcano_with_volume(&mut self, volume: f64) -> bool {
+        if self.has_volcano() {
+            return false;
+        }
+        self.next_cell.volcano_volume = volume;
+        true
+    }
+
+    pub fn add_sinkhole_with_volume(&mut self, volume: f64) -> bool {
+        if self.has_sinkhole() {
+            return false;
+        }
+        self.next_cell.sinkhole_volume = volume;
+        true
+    }
+
+    pub fn has_volcano(&self) -> bool {
+        self.next_cell.volcano_volume > 1e-10
+    }
+
+    pub fn has_sinkhole(&self) -> bool {
+        self.next_cell.sinkhole_volume > 1e-10
+    }
+
+    pub fn has_any_anomaly(&self) -> bool {
+        self.has_volcano() || self.has_sinkhole()
+    }
+
+    pub fn process_volcanoes_and_sinkholes(&mut self) {
+        if self.has_volcano() {
+            let volcano_volume = self.next_cell.volcano_volume;
+            self.next_cell.volume = (self.next_cell.volume + volcano_volume).max(0.0);
+            self.next_cell.energy_j =
+                (self.next_cell.energy_j + volcano_volume * VOLCANO_JOULES_PER_VOLUME).max(0.0);
+
+            self.next_cell.volcano_volume *= VOLCANO_DECAY_RATE;
+            if self.next_cell.volcano_volume < 10.0 {
+                self.next_cell.volcano_volume = 0.0;
+            }
+        }
+
+        if self.has_sinkhole() {
+            let sinkhole_volume = self.next_cell.sinkhole_volume;
+            self.next_cell.volume = (self.next_cell.volume - sinkhole_volume).max(0.0);
+            self.next_cell.energy_j =
+                (self.next_cell.energy_j - sinkhole_volume * JOULES_PER_KM3).max(0.0);
+
+            self.next_cell.sinkhole_volume *= SINKHOLE_DECAY_RATE;
+            if self.next_cell.sinkhole_volume < 1e-10 {
+                self.next_cell.sinkhole_volume = 0.0;
+            }
         }
     }
 
-    /// Add volume from anomaly propagation
-    pub fn volume_from_anomaly(&mut self, volume_change: f64) {
-        self.next_cell.volume = (self.next_cell.volume + volume_change).max(0.0);
-        self.next_cell.energy_j = (self.next_cell.energy_j + volume_change * JOULES_PER_KM3).max(0.0);
+    pub fn add_volcano_cluster(&mut self, volume: f64) {
+        self.next_cell.volume = (self.next_cell.volume + volume).max(0.0);
+        self.next_cell.energy_j = (self.next_cell.energy_j + volume * JOULES_PER_KM3).max(0.0);
     }
 
-    /// Add anomaly to this cell and degraded strength to neighbors
-    /// Returns list of neighbor cell IDs that received degraded anomalies
-    pub fn add_anomaly_with_neighbors(&mut self) -> (bool, Vec<CellIndex>) {
-        // Try to add anomaly to this cell first
-        let added_to_self = self.add_anomaly();
-        if !added_to_self {
-            return (false, vec![]); // Cell already has anomaly
+    pub fn add_sinkhole_cluster(&mut self, volume: f64) {
+        self.next_cell.volume = (self.next_cell.volume - volume).max(0.0);
+        self.next_cell.energy_j = (self.next_cell.energy_j - volume * JOULES_PER_KM3).max(0.0);
+    }
+
+    pub fn try_create_volcano_cluster(&mut self) -> Option<Vec<(CellIndex, f64)>> {
+        if !self.try_add_volcano() {
+            return None;
         }
 
-        // Get the anomaly strength that was just added
-        let base_strength = self.next_cell.anomaly_volume;
-        let degraded_strength = base_strength * 0.3; // 30% strength for neighbors
+        let mut rng = rand::rng();
+        if rng.random::<f64>() > 0.1 {
+            return None;
+        }
 
-        // Return the neighbor IDs (caller will handle adding to neighbors)
-        (true, self.cell.neighbors.clone())
+        let base_volume = self.next_cell.volcano_volume;
+        let cluster_size = rng.random_range(2..=8);
+        let mut neighbors_within_4: Vec<CellIndex> = Vec::new();
+
+        for &neighbor in &self.cell.neighbors {
+            neighbors_within_4.push(neighbor);
+            if neighbors_within_4.len() >= 4 {
+                break;
+            }
+        }
+
+        let mut cluster_volcanoes = Vec::new();
+        for i in 0..cluster_size.min(neighbors_within_4.len()) {
+            let neighbor_id = neighbors_within_4[i];
+            let strength = rng.random_range(0.0..=0.8);
+            let volcano_volume = base_volume * strength;
+            cluster_volcanoes.push((neighbor_id, volcano_volume));
+        }
+
+        Some(cluster_volcanoes)
+    }
+
+    pub fn try_create_massive_sink_event(&mut self) -> Option<Vec<(CellIndex, f64)>> {
+        if !self.try_add_sinkhole() {
+            return None;
+        }
+
+        let mut rng = rand::rng();
+        if rng.random::<f64>() > 0.02 {
+            return None;
+        }
+
+        let base_volume = self.next_cell.sinkhole_volume;
+        let mut neighbor_sinkholes = Vec::new();
+
+        for &neighbor_id in &self.cell.neighbors {
+            let sinkhole_volume = base_volume * 0.5;
+            neighbor_sinkholes.push((neighbor_id, sinkhole_volume));
+        }
+
+        Some(neighbor_sinkholes)
     }
 }
 
@@ -139,17 +254,22 @@ impl From<AsthenosphereCell> for AsthenosphereCellNext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use h3o::CellIndex;
     use crate::h3_utils::H3Utils;
+    use h3o::CellIndex;
 
-    fn create_test_cell(cell_index: CellIndex, volume: f64, energy_j: f64) -> AsthenosphereCellNext {
+    fn create_test_cell(
+        cell_index: CellIndex,
+        volume: f64,
+        energy_j: f64,
+    ) -> AsthenosphereCellNext {
         let cell = AsthenosphereCell {
             id: cell_index,
             volume,
             energy_j,
             step: 0,
             neighbors: vec![],
-            anomaly_volume: 0.0,
+            volcano_volume: 0.0,
+            sinkhole_volume: 0.0,
         };
         AsthenosphereCellNext::new(cell)
     }
@@ -175,9 +295,9 @@ mod tests {
         sim_cell.next_cell.energy_j = 2.2e12;
 
         assert_eq!(sim_cell.cell.volume, 1000.0); // Current unchanged
-        assert_eq!(sim_cell.next_cell.volume, 1100.0);    // Next updated
-        assert_eq!(sim_cell.cell.energy_j, 2e12);   // Current unchanged
-        assert_eq!(sim_cell.next_cell.energy_j, 2.2e12);    // Next updated
+        assert_eq!(sim_cell.next_cell.volume, 1100.0); // Next updated
+        assert_eq!(sim_cell.cell.energy_j, 2e12); // Current unchanged
+        assert_eq!(sim_cell.next_cell.energy_j, 2.2e12); // Next updated
     }
 
     #[test]
@@ -191,9 +311,9 @@ mod tests {
         sim_cell.commit_step();
 
         assert_eq!(sim_cell.cell.volume, 1100.0); // Current now updated
-        assert_eq!(sim_cell.next_cell.volume, 1100.0);    // Next same as current
+        assert_eq!(sim_cell.next_cell.volume, 1100.0); // Next same as current
         assert_eq!(sim_cell.cell.energy_j, 2.2e12); // Current now updated
-        assert_eq!(sim_cell.next_cell.energy_j, 2.2e12);    // Next same as current
+        assert_eq!(sim_cell.next_cell.energy_j, 2.2e12); // Next same as current
         assert_eq!(sim_cell.cell.step, 5);
         assert_eq!(sim_cell.next_cell.step, 6); // Next step incremented
     }
@@ -227,11 +347,21 @@ mod tests {
         let final_total_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
         let final_total_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
 
-        let volume_diff_percent = ((final_total_volume - initial_total_volume).abs() / initial_total_volume) * 100.0;
-        let energy_diff_percent = ((final_total_energy - initial_total_energy).abs() / initial_total_energy) * 100.0;
+        let volume_diff_percent =
+            ((final_total_volume - initial_total_volume).abs() / initial_total_volume) * 100.0;
+        let energy_diff_percent =
+            ((final_total_energy - initial_total_energy).abs() / initial_total_energy) * 100.0;
 
-        assert!(volume_diff_percent < 0.1, "Volume conservation failed: {:.3}% difference", volume_diff_percent);
-        assert!(energy_diff_percent < 0.1, "Energy conservation failed: {:.3}% difference", energy_diff_percent);
+        assert!(
+            volume_diff_percent < 0.1,
+            "Volume conservation failed: {:.3}% difference",
+            volume_diff_percent
+        );
+        assert!(
+            energy_diff_percent < 0.1,
+            "Energy conservation failed: {:.3}% difference",
+            energy_diff_percent
+        );
     }
 
     #[test]
@@ -311,11 +441,21 @@ mod tests {
         let final_total_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
         let final_total_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
 
-        let volume_diff_percent = ((final_total_volume - initial_total_volume).abs() / initial_total_volume) * 100.0;
-        let energy_diff_percent = ((final_total_energy - initial_total_energy).abs() / initial_total_energy) * 100.0;
+        let volume_diff_percent =
+            ((final_total_volume - initial_total_volume).abs() / initial_total_volume) * 100.0;
+        let energy_diff_percent =
+            ((final_total_energy - initial_total_energy).abs() / initial_total_energy) * 100.0;
 
-        assert!(volume_diff_percent < 0.1, "Volume conservation failed: {:.3}% difference", volume_diff_percent);
-        assert!(energy_diff_percent < 0.1, "Energy conservation failed: {:.3}% difference", energy_diff_percent);
+        assert!(
+            volume_diff_percent < 0.1,
+            "Volume conservation failed: {:.3}% difference",
+            volume_diff_percent
+        );
+        assert!(
+            energy_diff_percent < 0.1,
+            "Energy conservation failed: {:.3}% difference",
+            energy_diff_percent
+        );
     }
 
     #[test]
@@ -329,7 +469,8 @@ mod tests {
             step: 0,
             volume: 1000.0,
             energy_j: 2e12,
-            anomaly_volume: 0.0,
+            volcano_volume: 0.0,
+            sinkhole_volume: 0.0,
         });
         let mut cell_b = AsthenosphereCellNext::new(AsthenosphereCell {
             id: cell_index_b,
@@ -337,7 +478,8 @@ mod tests {
             step: 0,
             volume: 500.0,
             energy_j: 1e12,
-            anomaly_volume: 0.0,
+            volcano_volume: 0.0,
+            sinkhole_volume: 0.0,
         });
 
         // Record initial totals
@@ -351,7 +493,13 @@ mod tests {
         let final_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
         let final_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
 
-        assert!((initial_volume - final_volume).abs() < 1e-10, "Volume should be conserved");
-        assert!((initial_energy - final_energy).abs() < 1e6, "Energy should be conserved");
+        assert!(
+            (initial_volume - final_volume).abs() < 1e-10,
+            "Volume should be conserved"
+        );
+        assert!(
+            (initial_energy - final_energy).abs() < 1e6,
+            "Energy should be conserved"
+        );
     }
 }
