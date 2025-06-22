@@ -93,8 +93,8 @@ impl AsthenosphereCell {
         let scaled_location = location.normalize() * noise_scale;
         let noise_val = noise.get(scaled_location.to_array().map(|n| n as f64));
 
-        // Gentler variation: 0.7x to 1.3x the base volume
-        let random_scale = Self::smooth_noise_scale(noise_val, 0.8, 0.9, 1.1);
+        // Minimal variation: 0.98x to 1.02x the base volume (±2% instead of ±10%)
+        let random_scale = Self::smooth_noise_scale(noise_val, 0.8, 0.98, 1.02);
         AVG_STARTING_VOLUME_KM_3 * random_scale
     }
 
@@ -107,8 +107,8 @@ impl AsthenosphereCell {
             scaled_location.z as f64
         ]);
         
-        // Gentler energy variation: 0.8x to 1.2x base energy per volume
-        let energy_scale = Self::smooth_noise_scale(perlin_value, 0.3, 0.9, 1.1);
+        // Minimal energy variation: 0.98x to 1.02x base energy per volume (±2% instead of ±10%)
+        let energy_scale = Self::smooth_noise_scale(perlin_value, 0.3, 0.98, 1.02);
         base_energy_per_volume * energy_scale
     }
 

@@ -28,15 +28,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create and initialize simulation
     println!("🔧 Creating simulation...");
+    let vis_freq = 20;
     let props = SimNextProps::new(EARTH.clone(), store)
-        .with_visualization(true, 20)
+        .with_visualization(true, vis_freq)
         .with_database_saving(false)
-        .with_debug(false);
+        .with_debug(false); // Enable debug to see initialization timing
     let mut sim = SimNext::new(props);
     
-    println!("✅ Simulation initialized with {} cells", sim.cell_count());
     println!("🔗 Generated {} binary pairs for levelling", sim.binary_pairs.len());
-    println!("🖼️ Visualization enabled - images will export every 10 steps");
+    println!("🖼️ Visualization enabled - images will export every {} steps", vis_freq);
     println!();
 
     // Run the simulation
