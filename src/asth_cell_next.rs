@@ -1,6 +1,6 @@
 use crate::asthenosphere::AsthenosphereCell;
 use crate::constants::{
-    AVG_STARTING_VOLUME_KM_3, BACK_FILL_LEVEL, BACK_FILL_RATE, CELL_JOULES_EQUILIBRIUM,
+    CELL_JOULES_EQUILIBRIUM,
     COOLING_RATE, JOULES_PER_KM3, LAYER_COUNT, SINKHOLE_CHANCE, SINKHOLE_DECAY_RATE,
     SINKHOLE_MAX_VOLUME_TO_REMOVE, SINKHOLE_MIN_VOLUME_TO_REMOVE, VOLCANO_BIAS, VOLCANO_CHANCE,
     VOLCANO_DECAY_RATE,  VOLCANO_JOULES_PER_VOLUME, VOLCANO_MAX_VOLUME,
@@ -57,22 +57,6 @@ impl AsthenosphereCellNext {
         //  self.next_cell.energy_layers[0] += heating_energy; // Apply heating to bottom layer
     }
 
-    pub fn back_fill(&mut self) {
-        if self.has_any_anomaly() {
-            return;
-        }
-
-        let trigger_rate = AVG_STARTING_VOLUME_KM_3 * BACK_FILL_LEVEL;
-        // Apply back-fill to all layers
-        for layer_idx in 0..LAYER_COUNT {
-            if self.cell.volume_layers[layer_idx] < trigger_rate {
-                let diff = trigger_rate - self.cell.volume_layers[layer_idx];
-                let back_fill = diff * BACK_FILL_RATE;
-                self.next_cell.volume_layers[layer_idx] += back_fill;
-                self.next_cell.energy_layers[layer_idx] += back_fill * JOULES_PER_KM3;
-            }
-        }
-    }
 
     fn calculate_perlin_heating(
         cell_index: CellIndex,

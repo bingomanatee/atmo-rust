@@ -54,9 +54,6 @@ pub const SINKHOLE_CHANCE: f64 = 0.005;        // 1 in 100 cells per step
 pub const VOLCANO_DECAY_RATE: f64 = 0.666;
 pub const SINKHOLE_DECAY_RATE: f64 = 0.85;
 
-// ==== Back Fill =====
-pub const BACK_FILL_LEVEL: f64 = 0.8;
-pub const BACK_FILL_RATE: f64 = 0.2;
 
 // ===== Convection =====
 pub const GLOBAL_CONVECTION: f64 = 0.3;
@@ -82,3 +79,9 @@ pub const ENERGY_INCREASE_PER_LAYER: f64 = 0.5; // each layer is 50% more joules
 pub const VERTICAL_ENERGY_MIXING : f64 = 0.2; // that is, each turn, 
 // 20% of the energy from the layer below goes up 
 // and 20% of the energy from the layer above goes down.
+
+// ======= Lithosphere 
+pub const DENSITY_KG_M3: f64 = 3300.0;
+pub const SPECIFIC_HEAT_KJ_KG_C: f64 = 1.0; // or 1000 J/kg°C
+pub const LITHOSPHERE_CREATION_TEMP_C: f64 = 850.0;
+pub const LITHOSPHERE_CREATION_JOULES_PER_KM3 : f64 = LITHOSPHERE_CREATION_TEMP_C * SPECIFIC_HEAT_KJ_KG_C * DENSITY_KG_M3;

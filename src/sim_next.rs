@@ -12,6 +12,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::fs;
 use uuid::Uuid;
+use rayon::prelude::*;
 
 /// Configuration properties for creating a new SimNext simulation
 pub struct SimNextProps {
@@ -103,6 +104,9 @@ pub struct SimNext {
     pub start_time: std::time::Instant,
     pub initialization_time_s: f64,
 }
+
+const LIFT_THRESHOLD: f64 = 0.9;
+const LIFT_REPLACEMENT_RATE : f64= 0.33;
 
 impl SimNext {
     /// Create a new simulation with configuration props
@@ -263,33 +267,13 @@ impl SimNext {
         self.binary_pairs = pairs_map.into_values().collect();
     }
     
-    fn back_fill(&mut self) {
-        // Apply back_fill to all cells
-        let cell_list: Vec<AsthenosphereCellNext> = self.cells.clone().into_values().collect();
-        for mut cell in cell_list {
-            let mut in_or_near_anomaly = cell.has_any_anomaly();
-            
-            for neighbor_id in cell.clone().cell.neighbors {
-                if let Some(next) = self.cells.get(&neighbor_id) {
-                    if next.has_any_anomaly() {
-                        in_or_near_anomaly = true;
-                        break;
-                    }
-                }
-            }
-            if !in_or_near_anomaly {
-                cell.back_fill();
-                self.cells.insert(cell.cell_index(), cell);
-            }
-        }
-    }
 
     pub fn run_step(&mut self) {
         
-        self.back_fill();
         self.debug_print(&format!("🔄 Running step {}", self.step + 1));
 
         self.level_cells();
+        self.apply_material_lift();
         self.cool_cells();
         self.apply_vertical_energy_mixing();
         self.process_volcanoes_and_sinkholes();
@@ -418,20 +402,84 @@ impl SimNext {
     }
 
     fn cool_cells(&mut self) {
-        for cell in self.cells.values_mut() {
+        self.cells.par_iter_mut().for_each(|(_, cell)| {
             cell.cool_with_heating(&self.planet, self.step, ASTH_RES);
-        }
+        });
+    }
+
+    fn apply_material_lift(&mut self) {
+        use crate::constants::AVG_STARTING_VOLUME_KM_3;
+        
+        self.debug_print("🔺 Applying material lift for low volume layers");
+        
+        self.cells.par_iter_mut().for_each(|(_, cell)| {
+            let threshold_volume = AVG_STARTING_VOLUME_KM_3 * LIFT_THRESHOLD; // 90% of average starting volume
+            
+            // Process layers from top to bottom to create true cascading effect
+            // Each layer's deficit can trigger lifting that creates deficits in layers below
+            for layer_index in (0..LAYER_COUNT).rev() {
+                let current_volume = cell.next_cell.volume_layers[layer_index];
+                
+                if current_volume < threshold_volume {
+                    let deficit = threshold_volume - current_volume;
+                    let lift_amount = deficit * LIFT_REPLACEMENT_RATE; // 5% of deficit
+                    
+                    if layer_index == 0 {
+                        // Bottom layer: lift from imaginary layer below with 50% higher energy
+                        let base_energy_density = if current_volume > 0.0 {
+                            cell.next_cell.energy_layers[layer_index] / current_volume
+                        } else {
+                            crate::constants::JOULES_PER_KM3
+                        };
+                        let enhanced_energy_density = base_energy_density * 1.5; // 50% higher energy
+                        let energy_to_add = lift_amount * enhanced_energy_density;
+                        
+                        cell.next_cell.volume_layers[layer_index] += lift_amount;
+                        cell.next_cell.energy_layers[layer_index] += energy_to_add;
+                    } else {
+                        // Upper layers: lift from layer below, which may create cascading deficit
+                        let lower_layer = layer_index - 1;
+                        let lower_volume = cell.next_cell.volume_layers[lower_layer];
+                        
+                        if lower_volume > lift_amount {
+                            // Calculate proportional energy transfer
+                            let energy_density = if lower_volume > 0.0 {
+                                cell.next_cell.energy_layers[lower_layer] / lower_volume
+                            } else {
+                                0.0
+                            };
+                            let energy_to_transfer = lift_amount * energy_density;
+                            
+                            // Transfer material from lower to upper layer
+                            cell.next_cell.volume_layers[lower_layer] -= lift_amount;
+                            cell.next_cell.energy_layers[lower_layer] -= energy_to_transfer;
+                            cell.next_cell.volume_layers[layer_index] += lift_amount;
+                            cell.next_cell.energy_layers[layer_index] += energy_to_transfer;
+                            
+                            // The removal from lower_layer may create a deficit that will be
+                            // processed when we reach that layer in the loop (cascading effect)
+                        }
+                    }
+                    
+                    // Ensure non-negative values
+                    cell.next_cell.volume_layers[layer_index] = cell.next_cell.volume_layers[layer_index].max(0.0);
+                    cell.next_cell.energy_layers[layer_index] = cell.next_cell.energy_layers[layer_index].max(0.0);
+                }
+            }
+            
+            // Ensure all layers have non-negative values after cascading
+            for layer_index in 0..LAYER_COUNT {
+                cell.next_cell.volume_layers[layer_index] = cell.next_cell.volume_layers[layer_index].max(0.0);
+                cell.next_cell.energy_layers[layer_index] = cell.next_cell.energy_layers[layer_index].max(0.0);
+            }
+        });
     }
 
     fn process_volcanoes_and_sinkholes(&mut self) {
         // Process volcanoes and sinkholes for all cells
-        let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
-
-        for cell_id in cell_ids {
-            if let Some(cell) = self.cells.get_mut(&cell_id) {
-                cell.process_volcanoes_and_sinkholes();
-            }
-        }
+        self.cells.par_iter_mut().for_each(|(_, cell)| {
+            cell.process_volcanoes_and_sinkholes();
+        });
     }
 
     fn try_spawn_volcanoes_and_sinkholes(&mut self) {
@@ -490,9 +538,9 @@ impl SimNext {
         let t = self.convection_system.step_in_cycle as f64 / self.convection_system.cycle_lifespan as f64;
         let planet = self.planet.clone();
         
-        for cell in self.cells.values_mut() {
+        self.cells.par_iter_mut().for_each(|(_, cell)| {
             Self::apply_convection_to_layer_static(&mut cell.next_cell, 0, &template, t, &self.convection_system, &planet);
-        }
+        });
         
         self.convection_system.advance_step();
         
@@ -517,9 +565,9 @@ impl SimNext {
         let t = self.convection_system.step_in_cycle as f64 / self.convection_system.cycle_lifespan as f64;
         let planet = self.planet.clone();
         
-        for cell in self.cells.values_mut() {
+        self.cells.par_iter_mut().for_each(|(_, cell)| {
             Self::apply_convection_to_layer_static(&mut cell.next_cell, 0, &template, t, &self.convection_system, &planet);
-        }
+        });
         
         for cell in self.cells.values_mut() {
             cell.commit_step();
@@ -582,47 +630,41 @@ impl SimNext {
 
         self.debug_print(&format!("🔄 Applying vertical volume and energy mixing ({:.1}% exchange)", VERTICAL_ENERGY_MIXING * 100.0));
 
-        let cell_indices: Vec<CellIndex> = self.cells.keys().cloned().collect();
+        self.cells.par_iter_mut().for_each(|(_, cell)| {
+            for layer_index in 0..(LAYER_COUNT - 1) {
+                let lower_layer = layer_index;
+                let upper_layer = layer_index + 1;
 
-        for cell_index in cell_indices {
-            if let Some(mut cell) = self.cells.get(&cell_index).cloned() {
-                for layer_index in 0..(LAYER_COUNT - 1) {
-                    let lower_layer = layer_index;
-                    let upper_layer = layer_index + 1;
+                let lower_volume_to_transfer = cell.next_cell.volume_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
+                let upper_volume_to_transfer = cell.next_cell.volume_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
+                
+                let lower_energy_to_transfer = cell.next_cell.energy_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
+                let upper_energy_to_transfer = cell.next_cell.energy_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
 
-                    let lower_volume_to_transfer = cell.next_cell.volume_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
-                    let upper_volume_to_transfer = cell.next_cell.volume_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
-                    
-                    let lower_energy_to_transfer = cell.next_cell.energy_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
-                    let upper_energy_to_transfer = cell.next_cell.energy_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
+                cell.next_cell.volume_layers[lower_layer] -= lower_volume_to_transfer;
+                cell.next_cell.volume_layers[lower_layer] += upper_volume_to_transfer;
 
-                    cell.next_cell.volume_layers[lower_layer] -= lower_volume_to_transfer;
-                    cell.next_cell.volume_layers[lower_layer] += upper_volume_to_transfer;
+                cell.next_cell.volume_layers[upper_layer] -= upper_volume_to_transfer;
+                cell.next_cell.volume_layers[upper_layer] += lower_volume_to_transfer;
 
-                    cell.next_cell.volume_layers[upper_layer] -= upper_volume_to_transfer;
-                    cell.next_cell.volume_layers[upper_layer] += lower_volume_to_transfer;
+                cell.next_cell.energy_layers[lower_layer] -= lower_energy_to_transfer;
+                cell.next_cell.energy_layers[lower_layer] += upper_energy_to_transfer;
 
-                    cell.next_cell.energy_layers[lower_layer] -= lower_energy_to_transfer;
-                    cell.next_cell.energy_layers[lower_layer] += upper_energy_to_transfer;
+                cell.next_cell.energy_layers[upper_layer] -= upper_energy_to_transfer;
+                cell.next_cell.energy_layers[upper_layer] += lower_energy_to_transfer;
 
-                    cell.next_cell.energy_layers[upper_layer] -= upper_energy_to_transfer;
-                    cell.next_cell.energy_layers[upper_layer] += lower_energy_to_transfer;
-
-                    cell.next_cell.volume_layers[lower_layer] = cell.next_cell.volume_layers[lower_layer].max(0.0);
-                    cell.next_cell.energy_layers[lower_layer] = cell.next_cell.energy_layers[lower_layer].max(0.0);
-                    cell.next_cell.volume_layers[upper_layer] = cell.next_cell.volume_layers[upper_layer].max(0.0);
-                    cell.next_cell.energy_layers[upper_layer] = cell.next_cell.energy_layers[upper_layer].max(0.0);
-                }
-
-                self.cells.insert(cell_index, cell);
+                cell.next_cell.volume_layers[lower_layer] = cell.next_cell.volume_layers[lower_layer].max(0.0);
+                cell.next_cell.energy_layers[lower_layer] = cell.next_cell.energy_layers[lower_layer].max(0.0);
+                cell.next_cell.volume_layers[upper_layer] = cell.next_cell.volume_layers[upper_layer].max(0.0);
+                cell.next_cell.energy_layers[upper_layer] = cell.next_cell.energy_layers[upper_layer].max(0.0);
             }
-        }
+        });
     }
 
     fn commit_step(&mut self) {
-        for cell in self.cells.values_mut() {
+        self.cells.par_iter_mut().for_each(|(_, cell)| {
             cell.commit_step();
-        }
+        });
     }
 
     /// Get total cell count
