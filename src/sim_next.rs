@@ -1,12 +1,13 @@
 use crate::asth_cell_next::AsthenosphereCellNext;
 use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs, ASTH_RES};
 use crate::binary_pair::BinaryPair;
-use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME};
+use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME, LAYER_COUNT, VERTICAL_ENERGY_MIXING};
 use crate::convection::{Convection, ConvectionSystem};
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
 use crate::rock_store::RockStore;
 use h3o::CellIndex;
+use noise::NoiseFn;
 use rand::Rng;
 use std::collections::HashMap;
 use std::fs;
@@ -74,15 +75,15 @@ impl SimNextProps {
     }
 }
 
-/// Fast asthenosphere simulation without RefCell complexity
+/// Fast asthenosphere simulation without RefCell complexity, with array-based layers
 pub struct SimNext {
-    /// All simulation cells - direct HashMap access, no RefCell overhead
+    /// Simulation cells with array-based volume and energy per layer
     pub cells: HashMap<CellIndex, AsthenosphereCellNext>,
 
     /// Binary pairs for levelling (precomputed for efficiency)
     pub binary_pairs: Vec<BinaryPair>,
 
-    /// Dynamic convection system with template interpolation
+    /// Dynamic convection system with template interpolation (applied only to bottom layer)
     pub convection_system: ConvectionSystem,
 
     /// Simulation metadata
@@ -138,14 +139,14 @@ impl SimNext {
         }
     }
 
-    /// Initialize cells for the planet using provided configuration
+    /// Initialize array-based cells for the planet using provided configuration
     pub fn initialize_cells_with_props(
         &mut self,
         seed: u64,
         resolution: h3o::Resolution,
         joules_per_km3: f64,
     ) {
-        println!("🌍 Initializing cells for simulation...");
+        println!("🌍 Initializing array-based cells for simulation...");
 
         let mut asth_cells = Vec::new();
 
@@ -161,26 +162,27 @@ impl SimNext {
         };
         println!(" -------- volcano max volume = {}", VOLCANO_MAX_VOLUME);
 
+        // Use the regular single-cell initialization method
         AsthenosphereCell::initial_cells_for_planet(args);
-        println!("🌍 Generated {} asthenosphere cells", asth_cells.len());
+        println!("🌍 Generated {} asthenosphere cells with {} layers each", asth_cells.len(), LAYER_COUNT);
 
-        // Convert to simulation cells
-        self.cells = asth_cells
-            .into_iter()
-            .map(|asth_cell| {
-                let sim_cell = AsthenosphereCellNext::new(asth_cell);
-                (sim_cell.cell_index(), sim_cell)
-            })
-            .collect();
+        // Create simulation cells with array-based layer data
+        for asth_cell in asth_cells {
+            let sim_cell = AsthenosphereCellNext::new(asth_cell.clone());
+            self.cells.insert(sim_cell.cell_index(), sim_cell);
+        }
 
         self.generate_binary_pairs();
 
         // Initialize convection system with correct cell count
-        self.convection_system = ConvectionSystem::new(seed as u32, self.cells.len());
+        let total_cells = self.cells.len();
+        self.convection_system = ConvectionSystem::new(seed as u32, total_cells);
 
         println!(
-            "🌍 Initialized {} cells with {} binary pairs",
-            self.cells.len(),
+            "🌍 Initialized {} cells with {} layers each ({} total layer entries) with {} binary pairs",
+            total_cells,
+            LAYER_COUNT,
+            total_cells * LAYER_COUNT,
             self.binary_pairs.len()
         );
         let current_template = self.convection_system.get_interpolated_template();
@@ -194,7 +196,7 @@ impl SimNext {
             self.convection_system.cycle_lifespan
         );
         
-        // Apply jump-start convection for dramatic initial patterns
+        // Apply jump-start convection for dramatic initial patterns (only to upper layer)
         self.jumpstart_convection();
     }
 
@@ -243,19 +245,23 @@ impl SimNext {
     }
     
     fn back_fill(&mut self) {
+        // Apply back_fill to all cells
         let cell_list: Vec<AsthenosphereCellNext> = self.cells.clone().into_values().collect();
         for mut cell in cell_list {
             let mut in_or_near_anomaly = cell.has_any_anomaly();
             
-            for  neighbor_id in cell.clone().cell.neighbors {
-                let next = self.cells.get(&neighbor_id).unwrap();
-                if next.has_any_anomaly() {
-                    in_or_near_anomaly = true;
+            for neighbor_id in cell.clone().cell.neighbors {
+                if let Some(next) = self.cells.get(&neighbor_id) {
+                    if next.has_any_anomaly() {
+                        in_or_near_anomaly = true;
+                        break;
+                    }
                 }
             }
             if !in_or_near_anomaly {
                 cell.back_fill();
-            } 
+                self.cells.insert(cell.cell_index(), cell);
+            }
         }
     }
 
@@ -265,25 +271,28 @@ impl SimNext {
         self.back_fill();
         self.debug_print(&format!("🔄 Running step {}", self.step + 1));
 
-        // 1. Level cells (equilibrate volumes/energies)
+        // 1. Level cells (equilibrate volumes/energies) across all layers
         self.level_cells();
 
-        // 2. Cool cells
+        // 2. Cool cells in all layers
         self.cool_cells();
 
-        // 3. Process existing anomalies and potentially add new ones
+        // 3. Vertical energy mixing between layers
+        self.apply_vertical_energy_mixing();
+
+        // 4. Process existing anomalies and potentially add new ones (all layers)
         self.process_volcanoes_and_sinkholes();
         self.try_spawn_volcanoes_and_sinkholes();
 
-        // 4. Apply global convection (final step)
+        // 5. Apply global convection (only to bottom layer)
         self.apply_convection();
 
-        // 5. Commit next state to current state
+        // 6. Commit next state to current state
         self.commit_step();
 
         self.step += 1;
 
-        // 5. Export visualization if needed
+        // 7. Export visualization if needed
         if self.visualize && self.step % self.vis_freq == 0 {
             self.debug_print(&format!(
                 "🖼️ Exporting visualization for step {}",
@@ -302,13 +311,14 @@ impl SimNext {
         self.debug_print("  📁 Preparing visualization export...");
         let output_dir = "vis/sim_next";
 
-        // Convert simulation cells to AsthenosphereCell for rendering
+        // Convert simulation cells to AsthenosphereCell for rendering (use upper layer from arrays for visualization)
+        let upper_layer_index = LAYER_COUNT - 1;
         let cells_for_export: Vec<(CellIndex, AsthenosphereCell)> = self
             .cells
             .iter()
             .map(|(&cell_id, cell)| {
-                let mut export_cell = cell.cell.clone();
-                export_cell.energy_j = (export_cell.energy_j / 100.0).round() * 100.0;
+                let export_cell = cell.cell.clone();
+                // The PNG exporter will use the compatibility methods volume() and energy_j()
                 (cell_id, export_cell)
             })
             .collect();
@@ -347,45 +357,73 @@ impl SimNext {
         self.debug_print("⚖️ Completed levelling");
     }
 
-    /// Level a single binary pair using conservative volume transfer
+    /// Level a single binary pair using conservative volume transfer (across all layer arrays)
     fn level_binary_pair(&mut self, pair: &BinaryPair) {
-        let (higher_id, lower_id) = {
-            let vol_a = match self.cells.get(&pair.cell_a) {
-                Some(cell) => cell.next_cell.volume,
-                None => return,
-            };
-            let vol_b = match self.cells.get(&pair.cell_b) {
-                Some(cell) => cell.next_cell.volume,
-                None => return,
-            };
-
-            if vol_a > vol_b {
-                (pair.cell_a, pair.cell_b)
-            } else {
-                (pair.cell_b, pair.cell_a)
-            }
+        // Get both cells
+        let (mut cell_a, mut cell_b) = match (
+            self.cells.get(&pair.cell_a).cloned(),
+            self.cells.get(&pair.cell_b).cloned(),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return, // Skip if either cell is missing
         };
 
-        let (mut higher_cell, mut lower_cell) = (
-            self.cells[&higher_id].clone(),
-            self.cells[&lower_id].clone(),
-        );
+        // Apply leveling to each layer in the arrays
+        for layer_index in 0..LAYER_COUNT {
+            let vol_a = cell_a.next_cell.volume_layers[layer_index];
+            let vol_b = cell_b.next_cell.volume_layers[layer_index];
 
-        let total_volume = higher_cell.next_cell.volume + lower_cell.next_cell.volume;
-        let equilibrium_volume = total_volume / 2.0;
-        let excess = higher_cell.next_cell.volume - equilibrium_volume;
+            let (higher_vol, lower_vol, is_a_higher) = if vol_a > vol_b {
+                (vol_a, vol_b, true)
+            } else {
+                (vol_b, vol_a, false)
+            };
 
-        let transfer_amount = excess * 0.25;
+            let total_volume = higher_vol + lower_vol;
+            let equilibrium_volume = total_volume / 2.0;
+            let excess = higher_vol - equilibrium_volume;
+            let transfer_amount = excess * 0.25;
 
-        higher_cell
-            .next_cell
-            .transfer_volume(transfer_amount, &mut lower_cell.next_cell);
+            if transfer_amount > 0.0 {
+                // Calculate proportional energy transfer
+                let energy_density = if higher_vol > 0.0 {
+                    if is_a_higher {
+                        cell_a.next_cell.energy_layers[layer_index] / vol_a
+                    } else {
+                        cell_b.next_cell.energy_layers[layer_index] / vol_b
+                    }
+                } else {
+                    0.0
+                };
+                let energy_transfer = energy_density * transfer_amount;
 
-        self.cells.insert(higher_id, higher_cell);
-        self.cells.insert(lower_id, lower_cell);
+                // Apply the transfer
+                if is_a_higher {
+                    cell_a.next_cell.volume_layers[layer_index] -= transfer_amount;
+                    cell_a.next_cell.energy_layers[layer_index] -= energy_transfer;
+                    cell_b.next_cell.volume_layers[layer_index] += transfer_amount;
+                    cell_b.next_cell.energy_layers[layer_index] += energy_transfer;
+                } else {
+                    cell_b.next_cell.volume_layers[layer_index] -= transfer_amount;
+                    cell_b.next_cell.energy_layers[layer_index] -= energy_transfer;
+                    cell_a.next_cell.volume_layers[layer_index] += transfer_amount;
+                    cell_a.next_cell.energy_layers[layer_index] += energy_transfer;
+                }
+
+                // Ensure non-negative values
+                cell_a.next_cell.volume_layers[layer_index] = cell_a.next_cell.volume_layers[layer_index].max(0.0);
+                cell_a.next_cell.energy_layers[layer_index] = cell_a.next_cell.energy_layers[layer_index].max(0.0);
+                cell_b.next_cell.volume_layers[layer_index] = cell_b.next_cell.volume_layers[layer_index].max(0.0);
+                cell_b.next_cell.energy_layers[layer_index] = cell_b.next_cell.energy_layers[layer_index].max(0.0);
+            }
+        }
+
+        // Update the cells back in the HashMap
+        self.cells.insert(pair.cell_a, cell_a);
+        self.cells.insert(pair.cell_b, cell_b);
     }
 
-    /// Cool all cells with Perlin heating from below
+    /// Cool all cells with Perlin heating from below (across all layer arrays)
     fn cool_cells(&mut self) {
         for cell in self.cells.values_mut() {
             cell.cool_with_heating(&self.planet, self.step, ASTH_RES);
@@ -393,6 +431,7 @@ impl SimNext {
     }
 
     fn process_volcanoes_and_sinkholes(&mut self) {
+        // Process volcanoes and sinkholes for all cells
         let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
 
         for cell_id in cell_ids {
@@ -403,6 +442,7 @@ impl SimNext {
     }
 
     fn try_spawn_volcanoes_and_sinkholes(&mut self) {
+        // Apply volcano/sinkhole spawning to all cells (surface activity)
         let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
         let mut volcano_clusters = Vec::new();
         let mut sinkhole_clusters = Vec::new();
@@ -456,17 +496,19 @@ impl SimNext {
         }
     }
 
-    /// Apply dynamic convection to all cells and advance cycle
+    /// Apply dynamic convection to bottom layer of arrays only and advance cycle
     fn apply_convection(&mut self) {
         let progress = self.convection_system.cycle_progress();
-        self.debug_print(&format!("🌪️ Applying dynamic convection (cycle {:.1}%)", progress * 100.0));
+        self.debug_print(&format!("🌪️ Applying dynamic convection to bottom layer arrays (cycle {:.1}%)", progress * 100.0));
         
+        // Get needed data from convection system first
+        let template = self.convection_system.get_interpolated_template();
+        let t = self.convection_system.step_in_cycle as f64 / self.convection_system.cycle_lifespan as f64;
+        let planet = self.planet.clone();
+        
+        // Apply convection only to the bottom layer (layer 0) of each cell's arrays
         for cell in self.cells.values_mut() {
-            self.convection_system.apply_convection(
-                &mut cell.next_cell,
-                &self.planet,
-                ASTH_RES
-            );
+            Self::apply_convection_to_layer_static(&mut cell.next_cell, 0, &template, t, &self.convection_system, &planet);
         }
         
         // Advance convection system to next step
@@ -485,35 +527,147 @@ impl SimNext {
         }
     }
     
-    /// Apply jump-start convection with 10x amplification for dramatic initial patterns
+    /// Apply jump-start convection with 10x amplification for dramatic initial patterns (bottom layer arrays only)
     fn jumpstart_convection(&mut self) {
-        println!("🚀 Applying jump-start convection (10x amplification)...");
+        println!("🚀 Applying jump-start convection to bottom layer arrays (10x amplification)...");
         
+        // Get needed data from convection system first
+        let mut template = self.convection_system.get_interpolated_template();
+        template.per_cell_addition *= 10.0;
+        template.per_cell_subtraction *= 10.0;
+        let t = self.convection_system.step_in_cycle as f64 / self.convection_system.cycle_lifespan as f64;
+        let planet = self.planet.clone();
+        
+        // Apply jump-start convection only to the bottom layer (layer 0) of each cell's arrays
         for cell in self.cells.values_mut() {
-            self.convection_system.apply_jumpstart_convection(
-                &mut cell.next_cell,
-                &self.planet,
-                ASTH_RES,
-                10.0 // 10x amplification
-            );
+            Self::apply_convection_to_layer_static(&mut cell.next_cell, 0, &template, t, &self.convection_system, &planet);
         }
         
-        // Commit the jump-start changes immediately
+        // Commit the jump-start changes immediately for all cells
         for cell in self.cells.values_mut() {
             cell.commit_step();
         }
         
-        println!("✅ Jump-start convection applied successfully");
+        println!("✅ Jump-start convection applied successfully to bottom layer arrays");
     }
 
-    /// Commit next state to current state
+    /// Apply convection to a specific layer in a cell's arrays (static method to avoid borrow issues)
+    fn apply_convection_to_layer_static(
+        cell: &mut AsthenosphereCell,
+        layer_index: usize,
+        template: &crate::convection::ConvectionTemplate,
+        t: f64,
+        convection_system: &crate::convection::ConvectionSystem,
+        planet: &crate::planet::Planet,
+    ) {
+        if layer_index >= LAYER_COUNT {
+            return;
+        }
+        
+        // Get cell location for perlin noise sampling
+        let gc = crate::geoconverter::GeoCellConverter::new(planet.radius_km as f64, ASTH_RES);
+        let location = gc.cell_to_vec3(cell.id);
+        
+        // Use template's noise scale
+        let scaled_location = location.normalize() * template.noise_scale;
+        
+        // Interpolate noise values between current and next perlin
+        let current_noise = convection_system.current_perlin.get(scaled_location.to_array().map(|n| n as f64));
+        let next_noise = convection_system.next_perlin.get(scaled_location.to_array().map(|n| n as f64));
+        let noise_value = current_noise * (1.0 - t) + next_noise * t;
+        
+        // Calculate thresholds for top and bottom percentiles
+        let addition_threshold = 1.0 - (template.addition_fraction * 2.0);
+        let subtraction_threshold = -1.0 + (template.subtraction_fraction * 2.0);
+        
+        if noise_value > addition_threshold {
+            // Top percentile: Addition - add material at start temperature
+            let volume_to_add = template.per_cell_addition;
+            let energy_to_add = volume_to_add * (crate::constants::CELL_JOULES_START / crate::constants::AVG_STARTING_VOLUME_KM_3);
+            
+            cell.volume_layers[layer_index] += volume_to_add;
+            cell.energy_layers[layer_index] += energy_to_add;
+        } else if noise_value < subtraction_threshold {
+            // Bottom percentile: Subtraction - remove material proportionally
+            let volume_to_remove = template.per_cell_subtraction;
+            let volume_to_remove = volume_to_remove.min(cell.volume_layers[layer_index] * 0.9); // Don't remove more than 90%
+            
+            if volume_to_remove > 0.0 && cell.volume_layers[layer_index] > 0.0 {
+                // Remove energy proportionally to volume
+                let energy_ratio = volume_to_remove / cell.volume_layers[layer_index];
+                let energy_to_remove = cell.energy_layers[layer_index] * energy_ratio;
+                
+                cell.volume_layers[layer_index] -= volume_to_remove;
+                cell.energy_layers[layer_index] -= energy_to_remove;
+                
+                // Ensure no negative values
+                cell.volume_layers[layer_index] = cell.volume_layers[layer_index].max(0.0);
+                cell.energy_layers[layer_index] = cell.energy_layers[layer_index].max(0.0);
+            }
+        }
+        // Middle cells remain unaffected
+    }
+
+    /// Apply vertical mixing between layers (both volume and energy transfer) using arrays
+    fn apply_vertical_energy_mixing(&mut self) {
+        if LAYER_COUNT < 2 {
+            return; // No mixing with single layer
+        }
+
+        self.debug_print(&format!("🔄 Applying vertical volume and energy mixing ({:.1}% exchange)", VERTICAL_ENERGY_MIXING * 100.0));
+
+        // Get all cell indices
+        let cell_indices: Vec<CellIndex> = self.cells.keys().cloned().collect();
+
+        for cell_index in cell_indices {
+            if let Some(mut cell) = self.cells.get(&cell_index).cloned() {
+                // Mix both volume and energy between adjacent layers within the same cell
+                for layer_index in 0..(LAYER_COUNT - 1) {
+                    let lower_layer = layer_index;
+                    let upper_layer = layer_index + 1;
+
+                    // Calculate volume and energy exchange amounts
+                    let lower_volume_to_transfer = cell.next_cell.volume_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
+                    let upper_volume_to_transfer = cell.next_cell.volume_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
+                    
+                    let lower_energy_to_transfer = cell.next_cell.energy_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
+                    let upper_energy_to_transfer = cell.next_cell.energy_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
+
+                    // Apply volume exchange (creates imbalances that leveling will fix)
+                    cell.next_cell.volume_layers[lower_layer] -= lower_volume_to_transfer;
+                    cell.next_cell.volume_layers[lower_layer] += upper_volume_to_transfer;
+
+                    cell.next_cell.volume_layers[upper_layer] -= upper_volume_to_transfer;
+                    cell.next_cell.volume_layers[upper_layer] += lower_volume_to_transfer;
+
+                    // Apply energy exchange
+                    cell.next_cell.energy_layers[lower_layer] -= lower_energy_to_transfer;
+                    cell.next_cell.energy_layers[lower_layer] += upper_energy_to_transfer;
+
+                    cell.next_cell.energy_layers[upper_layer] -= upper_energy_to_transfer;
+                    cell.next_cell.energy_layers[upper_layer] += lower_energy_to_transfer;
+
+                    // Ensure non-negative values
+                    cell.next_cell.volume_layers[lower_layer] = cell.next_cell.volume_layers[lower_layer].max(0.0);
+                    cell.next_cell.energy_layers[lower_layer] = cell.next_cell.energy_layers[lower_layer].max(0.0);
+                    cell.next_cell.volume_layers[upper_layer] = cell.next_cell.volume_layers[upper_layer].max(0.0);
+                    cell.next_cell.energy_layers[upper_layer] = cell.next_cell.energy_layers[upper_layer].max(0.0);
+                }
+
+                // Update the cell back in the HashMap
+                self.cells.insert(cell_index, cell);
+            }
+        }
+    }
+
+    /// Commit next state to current state (across all cells)
     fn commit_step(&mut self) {
         for cell in self.cells.values_mut() {
             cell.commit_step();
         }
     }
 
-    /// Get cell count
+    /// Get total cell count
     pub fn cell_count(&self) -> usize {
         self.cells.len()
     }
@@ -523,17 +677,17 @@ impl SimNext {
         self.step
     }
 
-    /// Calculate simulation statistics
+    /// Calculate simulation statistics (using upper layer arrays for primary stats)
     fn calculate_statistics(&self) -> SimulationStats {
-        let volumes: Vec<f64> = self
-            .cells
+        // Use upper layer from arrays for primary visualization stats
+        let upper_layer_index = LAYER_COUNT - 1;
+        let volumes: Vec<f64> = self.cells
             .values()
-            .map(|cell| cell.next_cell.volume)
+            .map(|cell| cell.next_cell.volume_layers[upper_layer_index])
             .collect();
-        let energies: Vec<f64> = self
-            .cells
+        let energies: Vec<f64> = self.cells
             .values()
-            .map(|cell| cell.next_cell.energy_j)
+            .map(|cell| cell.next_cell.energy_layers[upper_layer_index])
             .collect();
 
         let total_volume: f64 = volumes.iter().sum();

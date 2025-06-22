@@ -109,10 +109,10 @@ impl PngExporter {
         // Expand volume range to capture more variation: 50-150% of AVG_STARTING_VOLUME
         let volume_min = AVG_STARTING_VOLUME_KM_3 * 0.5;
         let volume_max = AVG_STARTING_VOLUME_KM_3 * 1.5;
-        let volume_normalized = ((cell.volume - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
+        let volume_normalized = ((cell.volume() - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
 
         // Use precomputed global color lookup table for fast color retrieval
-        let energy_normalized = ((cell.energy_j - ENERGY_MIN) / (ENERGY_MAX - ENERGY_MIN)).clamp(0.0, 1.0);
+        let energy_normalized = ((cell.energy_j() - ENERGY_MIN) / (ENERGY_MAX - ENERGY_MIN)).clamp(0.0, 1.0);
 
         // Fast lookup: convert normalized energy to table index
         let table_index = (energy_normalized * (COLOR_TABLE_SIZE - 1) as f64).round() as usize;
@@ -335,17 +335,17 @@ impl PngExporter {
         let temp_range = temp_max - temp_min;
         
         // Calculate mean energy for display
-        let total_energy: f64 = cells.iter().map(|(_, cell)| cell.energy_j).sum();
+        let total_energy: f64 = cells.iter().map(|(_, cell)| cell.energy_j()).sum();
         let mean_energy = total_energy / cells.len() as f64;
 
         // Calculate standard deviations for volume and energy
-        let total_volume: f64 = cells.iter().map(|(_, cell)| cell.volume).sum();
+        let total_volume: f64 = cells.iter().map(|(_, cell)| cell.volume()).sum();
         let mean_volume = total_volume / cells.len() as f64;
 
         // Calculate standard deviation for volume
         let volume_variance: f64 = cells.iter()
             .map(|(_, cell)| {
-                let diff = cell.volume - mean_volume;
+                let diff = cell.volume() - mean_volume;
                 diff * diff
             })
             .sum::<f64>() / cells.len() as f64;
@@ -354,7 +354,7 @@ impl PngExporter {
         // Calculate standard deviation for energy
         let energy_variance: f64 = cells.iter()
             .map(|(_, cell)| {
-                let diff = cell.energy_j - mean_energy;
+                let diff = cell.energy_j() - mean_energy;
                 diff * diff
             })
             .sum::<f64>() / cells.len() as f64;
@@ -363,7 +363,7 @@ impl PngExporter {
         // Count cells in 100 temperature bins for higher resolution
         let mut bins = [0u32; 100];
         for (_, cell) in cells {
-            let bin_index = ((cell.energy_j - temp_min) / temp_range * 100.0).floor() as usize;
+            let bin_index = ((cell.energy_j() - temp_min) / temp_range * 100.0).floor() as usize;
             let bin_index = bin_index.min(99); // Clamp to valid range
             bins[bin_index] += 1;
         }

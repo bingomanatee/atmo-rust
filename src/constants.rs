@@ -20,7 +20,7 @@ pub const JOULES_PER_KM3: f64 = CELL_JOULES_START / AVG_STARTING_VOLUME_KM_3;
 pub const AVG_VOLUME_TO_ADD: f64 = 0.0325;
 pub const LEVEL_AMT: f64 = 0.2; // 100% equilibration rate, adjusted for ~6 neighbors per cell in binary pair leveller
 pub const STANDARD_STEPS: u32 = 500;
-
+pub const HEIGHT_PER_ASTH_LAYER : f64 = 10.0; // km
 pub const EARTH_RADIUS_KM: i32 = 6372;
 pub const RHO_EARTH: f64 = 4.5; // g/cm³
 pub const VOLCANO_BIAS: f64 = 0.05;
@@ -71,3 +71,14 @@ pub const CONVECTION_TEMPLATE_LIFESPAN_MIN: u32 = 100;
 pub const CONVECTION_TEMPLATE_LIFESPAN_MAX: u32 = 300;
 pub const CONVECTION_NOISE_SCALE_MIN: f32 = 3.0;
 pub const CONVECTION_NOISE_SCALE_MAX: f32 = 8.0;
+
+// ======= Layers 
+
+pub const LAYER_COUNT: usize = 2;
+pub const ENERGY_INCREASE_PER_LAYER: f64 = 0.5; // each layer is 50% more joules based on the starting joules abov
+// eg the second layer has  1 1/2 as many joules per cell stariting the next layer has 2x , then 2.5x, etc. 
+// note - we are not computing additional density per layer as at this scale it only increaeses by < 10% so the added math burden is 
+// not going to create added realism.
+pub const VERTICAL_ENERGY_MIXING : f64 = 0.2; // that is, each turn, 
+// 20% of the energy from the layer below goes up 
+// and 20% of the energy from the layer above goes down.

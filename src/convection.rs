@@ -202,31 +202,9 @@ impl ConvectionSystem {
         let addition_threshold = 1.0 - (template.addition_fraction * 2.0);
         let subtraction_threshold = -1.0 + (template.subtraction_fraction * 2.0);
         
-        if noise_value > addition_threshold {
-            // Top percentile: Addition - add material at start temperature
-            let volume_to_add = template.per_cell_addition;
-            let energy_to_add = volume_to_add * (CELL_JOULES_START / AVG_STARTING_VOLUME_KM_3);
-            
-            cell.volume += volume_to_add;
-            cell.energy_j += energy_to_add;
-        } else if noise_value < subtraction_threshold {
-            // Bottom percentile: Subtraction - remove material proportionally
-            let volume_to_remove = template.per_cell_subtraction;
-            let volume_to_remove = volume_to_remove.min(cell.volume * 0.9); // Don't remove more than 90%
-            
-            if volume_to_remove > 0.0 && cell.volume > 0.0 {
-                // Remove energy proportionally to volume
-                let energy_ratio = volume_to_remove / cell.volume;
-                let energy_to_remove = cell.energy_j * energy_ratio;
-                
-                cell.volume -= volume_to_remove;
-                cell.energy_j -= energy_to_remove;
-                
-                // Ensure no negative values
-                cell.volume = cell.volume.max(0.0);
-                cell.energy_j = cell.energy_j.max(0.0);
-            }
-        }
+        // NOTE: This method is deprecated - the new SimNext uses array-based convection
+        // This is kept for backward compatibility but should not be used with array-based cells
+        unimplemented!("Old convection system is not compatible with array-based cells. Use SimNext::apply_convection_to_layer_static instead.");
         // Middle cells remain unaffected
     }
     
@@ -283,31 +261,9 @@ impl ConvectionSystem {
         let addition_threshold = 1.0 - (template.addition_fraction * 2.0);
         let subtraction_threshold = -1.0 + (template.subtraction_fraction * 2.0);
         
-        if noise_value > addition_threshold {
-            // Top percentile: Addition - add amplified material at start temperature
-            let volume_to_add = template.per_cell_addition;
-            let energy_to_add = volume_to_add * (CELL_JOULES_START / AVG_STARTING_VOLUME_KM_3);
-            
-            cell.volume += volume_to_add;
-            cell.energy_j += energy_to_add;
-        } else if noise_value < subtraction_threshold {
-            // Bottom percentile: Subtraction - remove amplified material proportionally
-            let volume_to_remove = template.per_cell_subtraction;
-            let volume_to_remove = volume_to_remove.min(cell.volume * 0.9); // Don't remove more than 90%
-            
-            if volume_to_remove > 0.0 && cell.volume > 0.0 {
-                // Remove energy proportionally to volume
-                let energy_ratio = volume_to_remove / cell.volume;
-                let energy_to_remove = cell.energy_j * energy_ratio;
-                
-                cell.volume -= volume_to_remove;
-                cell.energy_j -= energy_to_remove;
-                
-                // Ensure no negative values
-                cell.volume = cell.volume.max(0.0);
-                cell.energy_j = cell.energy_j.max(0.0);
-            }
-        }
+        // NOTE: This method is deprecated - the new SimNext uses array-based convection
+        // This is kept for backward compatibility but should not be used with array-based cells
+        unimplemented!("Old jumpstart convection system is not compatible with array-based cells. Use SimNext::apply_convection_to_layer_static instead.");
         // Middle cells remain unaffected
     }
 }
@@ -375,31 +331,9 @@ impl Convection {
         let addition_threshold = 1.0 - (self.addition_fraction * 2.0); // Convert to threshold in [-1, 1] range
         let subtraction_threshold = -1.0 + (self.subtraction_fraction * 2.0); // Convert to threshold in [-1, 1] range
         
-        if noise_value > addition_threshold {
-            // Top percentile: Addition - add material at start temperature
-            let volume_to_add = self.per_cell_addition;
-            let energy_to_add = volume_to_add * (CELL_JOULES_START / AVG_STARTING_VOLUME_KM_3);
-            
-            cell.volume += volume_to_add;
-            cell.energy_j += energy_to_add;
-        } else if noise_value < subtraction_threshold {
-            // Bottom percentile: Subtraction - remove material proportionally
-            let volume_to_remove = self.per_cell_subtraction;
-            let volume_to_remove = volume_to_remove.min(cell.volume * 0.9); // Don't remove more than 90%
-            
-            if volume_to_remove > 0.0 && cell.volume > 0.0 {
-                // Remove energy proportionally to volume
-                let energy_ratio = volume_to_remove / cell.volume;
-                let energy_to_remove = cell.energy_j * energy_ratio;
-                
-                cell.volume -= volume_to_remove;
-                cell.energy_j -= energy_to_remove;
-                
-                // Ensure no negative values
-                cell.volume = cell.volume.max(0.0);
-                cell.energy_j = cell.energy_j.max(0.0);
-            }
-        }
+        // NOTE: This method is deprecated - the new SimNext uses array-based convection
+        // This is kept for backward compatibility but should not be used with array-based cells
+        unimplemented!("Old convection system is not compatible with array-based cells. Use SimNext::apply_convection_to_layer_static instead.");
         // Middle 60-80% of cells remain unaffected
     }
     
@@ -464,22 +398,22 @@ mod tests {
             id: CellIndex::base_cells().next().unwrap(),
             neighbors: vec![],
             step: 0,
-            volume: AVG_STARTING_VOLUME_KM_3,
-            energy_j: CELL_JOULES_START,
+            volume_layers: vec![AVG_STARTING_VOLUME_KM_3; crate::constants::LAYER_COUNT],
+            energy_layers: vec![CELL_JOULES_START; crate::constants::LAYER_COUNT],
             volcano_volume: 0.0,
             sinkhole_volume: 0.0,
         };
         
-        let original_volume = cell.volume;
-        let _original_energy = cell.energy_j;
+        let original_volume = cell.volume_layers[0];
+        let _original_energy = cell.energy_layers[0];
         
         convection.apply_convection(&mut cell, &planet, Resolution::Two);
         
-        // Energy should be non-negative
-        assert!(cell.energy_j >= 0.0);
-        
-        // Volume should be non-negative
-        assert!(cell.volume >= 0.0);
+        // Energy should be non-negative for all layers
+        for layer_idx in 0..crate::constants::LAYER_COUNT {
+            assert!(cell.energy_layers[layer_idx] >= 0.0);
+            assert!(cell.volume_layers[layer_idx] >= 0.0);
+        }
         
         // Note: Volume may or may not change depending on perlin noise value for this specific cell
         // Most cells (60-80%) should remain unchanged

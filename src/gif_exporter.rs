@@ -110,10 +110,10 @@ impl GifExporter {
         // Gray scale based on volume: 75-125% of AVG_STARTING_VOLUME
         let volume_min = AVG_STARTING_VOLUME_KM_3 * 0.75;
         let volume_max = AVG_STARTING_VOLUME_KM_3 * 1.25;
-        let volume_normalized = ((cell.volume - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
+        let volume_normalized = ((cell.volume() - volume_min) / (volume_max - volume_min)).clamp(0.0, 1.0);
 
         // Hue based on energy: Red at CELL_ENERGY_START+ to Blue at CELL_ENERGY_EQUILIBRIUM
-        let energy_normalized = ((cell.energy_j - CELL_JOULES_EQUILIBRIUM) / (CELL_JOULES_START - CELL_JOULES_EQUILIBRIUM)).clamp(0.0, 1.0);
+        let energy_normalized = ((cell.energy_j() - CELL_JOULES_EQUILIBRIUM) / (CELL_JOULES_START - CELL_JOULES_EQUILIBRIUM)).clamp(0.0, 1.0);
 
         // Interpolate between blue (cold) and red (hot)
         let red = (energy_normalized * 255.0) as u8;

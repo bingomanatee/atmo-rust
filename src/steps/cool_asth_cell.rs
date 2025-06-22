@@ -1,6 +1,6 @@
 use crate::constants::{
     AVG_VOLUME_TO_ADD, CELL_JOULES_EQUILIBRIUM, CELL_JOULES_START, COOLING_RATE, JOULES_PER_KM3,
-    MAX_SUNK_TEMP, STANDARD_STEPS,
+    LAYER_COUNT, MAX_SUNK_TEMP, STANDARD_STEPS,
 };
 use crate::asthenosphere::AsthenosphereCell;
 use crate::rock_store::RockStore;
@@ -33,19 +33,23 @@ pub fn cool_asth_cell(
     match store.get_asth(l2_cell, step - 1) {
         // to tune the system we are ONLY considering cooling rate;
         Ok(Some(old_cell)) => {
-            let new_energy = old_cell.energy_j as f64 * cool_rate;
-
-            let new_cell = AsthenosphereCell {
-                step,
-                volume: old_cell.volume,
-                energy_j: new_energy,
-                ..old_cell.clone()
-            };
+            let mut new_cell = old_cell.clone();
+            new_cell.step = step;
+            
+            // Apply cooling to all layers
+            for layer_idx in 0..LAYER_COUNT {
+                new_cell.energy_layers[layer_idx] *= cool_rate;
+            }
+            
+            // Use surface layer for result reporting
+            let surface_layer = LAYER_COUNT - 1;
+            let new_energy = new_cell.energy_layers[surface_layer];
+            let new_volume = new_cell.volume_layers[surface_layer];
             
             Ok(ProcessResult {
                 volume_added: 0.0,
                 volume_removed: 0.0,
-                new_volume: new_cell.volume,
+                new_volume,
                 energy_k: new_energy,
                 cell: new_cell,
             })

@@ -1,7 +1,7 @@
 use crate::asthenosphere::AsthenosphereCell;
 use crate::constants::{
     AVG_STARTING_VOLUME_KM_3, BACK_FILL_LEVEL, BACK_FILL_RATE, CELL_JOULES_EQUILIBRIUM,
-    COOLING_RATE, JOULES_PER_KM3, SINKHOLE_CHANCE, SINKHOLE_DECAY_RATE,
+    COOLING_RATE, JOULES_PER_KM3, LAYER_COUNT, SINKHOLE_CHANCE, SINKHOLE_DECAY_RATE,
     SINKHOLE_MAX_VOLUME_TO_REMOVE, SINKHOLE_MIN_VOLUME_TO_REMOVE, VOLCANO_BIAS, VOLCANO_CHANCE,
     VOLCANO_DECAY_RATE,  VOLCANO_JOULES_PER_VOLUME, VOLCANO_MAX_VOLUME,
     VOLCANO_MIN_VOLUME,
@@ -49,9 +49,12 @@ impl AsthenosphereCellNext {
     }
 
     pub fn cool_with_heating(&mut self, planet: &Planet, step: u32, resolution: h3o::Resolution) {
-        self.next_cell.energy_j *= *COOLING_RATE;
+        // Apply cooling to all layers
+        for layer_idx in 0..LAYER_COUNT {
+            self.next_cell.energy_layers[layer_idx] *= *COOLING_RATE;
+        }
         //  let heating_energy = Self::calculate_perlin_heating(self.cell_index(), planet, step, resolution);
-        //  self.next_cell.energy_j += heating_energy;
+        //  self.next_cell.energy_layers[0] += heating_energy; // Apply heating to bottom layer
     }
 
     pub fn back_fill(&mut self) {
@@ -60,11 +63,14 @@ impl AsthenosphereCellNext {
         }
 
         let trigger_rate = AVG_STARTING_VOLUME_KM_3 * BACK_FILL_LEVEL;
-        if (self.cell.volume < trigger_rate) {
-            let diff = trigger_rate - self.cell.volume;
-            let back_fill = diff * BACK_FILL_RATE;
-            self.next_cell.volume += back_fill;
-            self.next_cell.energy_j += back_fill * JOULES_PER_KM3;
+        // Apply back-fill to all layers
+        for layer_idx in 0..LAYER_COUNT {
+            if self.cell.volume_layers[layer_idx] < trigger_rate {
+                let diff = trigger_rate - self.cell.volume_layers[layer_idx];
+                let back_fill = diff * BACK_FILL_RATE;
+                self.next_cell.volume_layers[layer_idx] += back_fill;
+                self.next_cell.energy_layers[layer_idx] += back_fill * JOULES_PER_KM3;
+            }
         }
     }
 
@@ -93,7 +99,10 @@ impl AsthenosphereCellNext {
     }
 
     pub fn cool(&mut self) {
-        self.next_cell.energy_j *= *COOLING_RATE;
+        // Apply cooling to all layers
+        for layer_idx in 0..LAYER_COUNT {
+            self.next_cell.energy_layers[layer_idx] *= *COOLING_RATE;
+        }
     }
 
     pub fn try_add_volcano(&mut self) -> bool {
@@ -156,11 +165,13 @@ impl AsthenosphereCellNext {
     }
 
     pub fn process_volcanoes_and_sinkholes(&mut self) {
+        let surface_layer = LAYER_COUNT - 1; // Apply volcano/sinkhole effects to surface layer
+        
         if self.has_volcano() {
             let volcano_volume = self.next_cell.volcano_volume;
-            self.next_cell.volume = (self.next_cell.volume + volcano_volume).max(0.0);
-            self.next_cell.energy_j =
-                (self.next_cell.energy_j + volcano_volume * VOLCANO_JOULES_PER_VOLUME).max(0.0);
+            self.next_cell.volume_layers[surface_layer] = (self.next_cell.volume_layers[surface_layer] + volcano_volume).max(0.0);
+            self.next_cell.energy_layers[surface_layer] =
+                (self.next_cell.energy_layers[surface_layer] + volcano_volume * VOLCANO_JOULES_PER_VOLUME).max(0.0);
 
             self.next_cell.volcano_volume *= VOLCANO_DECAY_RATE;
             if self.next_cell.volcano_volume < 10.0 {
@@ -170,9 +181,9 @@ impl AsthenosphereCellNext {
 
         if self.has_sinkhole() {
             let sinkhole_volume = self.next_cell.sinkhole_volume;
-            self.next_cell.volume = (self.next_cell.volume - sinkhole_volume).max(0.0);
-            self.next_cell.energy_j =
-                (self.next_cell.energy_j - sinkhole_volume * JOULES_PER_KM3).max(0.0);
+            self.next_cell.volume_layers[surface_layer] = (self.next_cell.volume_layers[surface_layer] - sinkhole_volume).max(0.0);
+            self.next_cell.energy_layers[surface_layer] =
+                (self.next_cell.energy_layers[surface_layer] - sinkhole_volume * JOULES_PER_KM3).max(0.0);
 
             self.next_cell.sinkhole_volume *= SINKHOLE_DECAY_RATE;
             if self.next_cell.sinkhole_volume < 1e-10 {
@@ -182,13 +193,15 @@ impl AsthenosphereCellNext {
     }
 
     pub fn add_volcano_cluster(&mut self, volume: f64) {
-        self.next_cell.volume = (self.next_cell.volume + volume).max(0.0);
-        self.next_cell.energy_j = (self.next_cell.energy_j + volume * JOULES_PER_KM3).max(0.0);
+        let surface_layer = LAYER_COUNT - 1;
+        self.next_cell.volume_layers[surface_layer] = (self.next_cell.volume_layers[surface_layer] + volume).max(0.0);
+        self.next_cell.energy_layers[surface_layer] = (self.next_cell.energy_layers[surface_layer] + volume * JOULES_PER_KM3).max(0.0);
     }
 
     pub fn add_sinkhole_cluster(&mut self, volume: f64) {
-        self.next_cell.volume = (self.next_cell.volume - volume).max(0.0);
-        self.next_cell.energy_j = (self.next_cell.energy_j - volume * JOULES_PER_KM3).max(0.0);
+        let surface_layer = LAYER_COUNT - 1;
+        self.next_cell.volume_layers[surface_layer] = (self.next_cell.volume_layers[surface_layer] - volume).max(0.0);
+        self.next_cell.energy_layers[surface_layer] = (self.next_cell.energy_layers[surface_layer] - volume * JOULES_PER_KM3).max(0.0);
     }
 
     pub fn try_create_volcano_cluster(&mut self) -> Option<Vec<(CellIndex, f64)>> {
@@ -264,8 +277,8 @@ mod tests {
     ) -> AsthenosphereCellNext {
         let cell = AsthenosphereCell {
             id: cell_index,
-            volume,
-            energy_j,
+            volume_layers: vec![volume; LAYER_COUNT],
+            energy_layers: vec![energy_j; LAYER_COUNT],
             step: 0,
             neighbors: vec![],
             volcano_volume: 0.0,
@@ -279,10 +292,10 @@ mod tests {
         let cell_index = CellIndex::try_from(0x8a1fb46622dffff_u64).unwrap();
         let sim_cell = create_test_cell(cell_index, 1000.0, 2e12);
 
-        assert_eq!(sim_cell.cell.volume, 1000.0);
-        assert_eq!(sim_cell.cell.energy_j, 2e12);
-        assert_eq!(sim_cell.next_cell.volume, 1000.0);
-        assert_eq!(sim_cell.next_cell.energy_j, 2e12);
+        assert_eq!(sim_cell.cell.volume_layers[0], 1000.0);
+        assert_eq!(sim_cell.cell.energy_layers[0], 2e12);
+        assert_eq!(sim_cell.next_cell.volume_layers[0], 1000.0);
+        assert_eq!(sim_cell.next_cell.energy_layers[0], 2e12);
         assert_eq!(sim_cell.cell_index(), cell_index);
     }
 
@@ -291,13 +304,13 @@ mod tests {
         let cell_index = CellIndex::try_from(0x8a1fb46622dffff_u64).unwrap();
         let mut sim_cell = create_test_cell(cell_index, 1000.0, 2e12);
 
-        sim_cell.next_cell.volume = 1100.0;
-        sim_cell.next_cell.energy_j = 2.2e12;
+        sim_cell.next_cell.volume_layers[0] = 1100.0;
+        sim_cell.next_cell.energy_layers[0] = 2.2e12;
 
-        assert_eq!(sim_cell.cell.volume, 1000.0); // Current unchanged
-        assert_eq!(sim_cell.next_cell.volume, 1100.0); // Next updated
-        assert_eq!(sim_cell.cell.energy_j, 2e12); // Current unchanged
-        assert_eq!(sim_cell.next_cell.energy_j, 2.2e12); // Next updated
+        assert_eq!(sim_cell.cell.volume_layers[0], 1000.0); // Current unchanged
+        assert_eq!(sim_cell.next_cell.volume_layers[0], 1100.0); // Next updated
+        assert_eq!(sim_cell.cell.energy_layers[0], 2e12); // Current unchanged
+        assert_eq!(sim_cell.next_cell.energy_layers[0], 2.2e12); // Next updated
     }
 
     #[test]
@@ -305,15 +318,15 @@ mod tests {
         let cell_index = CellIndex::try_from(0x8a1fb46622dffff_u64).unwrap();
         let mut sim_cell = create_test_cell(cell_index, 1000.0, 2e12);
 
-        sim_cell.next_cell.volume = 1100.0;
-        sim_cell.next_cell.energy_j = 2.2e12;
+        sim_cell.next_cell.volume_layers[0] = 1100.0;
+        sim_cell.next_cell.energy_layers[0] = 2.2e12;
         sim_cell.next_cell.step = 5;
         sim_cell.commit_step();
 
-        assert_eq!(sim_cell.cell.volume, 1100.0); // Current now updated
-        assert_eq!(sim_cell.next_cell.volume, 1100.0); // Next same as current
-        assert_eq!(sim_cell.cell.energy_j, 2.2e12); // Current now updated
-        assert_eq!(sim_cell.next_cell.energy_j, 2.2e12); // Next same as current
+        assert_eq!(sim_cell.cell.volume_layers[0], 1100.0); // Current now updated
+        assert_eq!(sim_cell.next_cell.volume_layers[0], 1100.0); // Next same as current
+        assert_eq!(sim_cell.cell.energy_layers[0], 2.2e12); // Current now updated
+        assert_eq!(sim_cell.next_cell.energy_layers[0], 2.2e12); // Next same as current
         assert_eq!(sim_cell.cell.step, 5);
         assert_eq!(sim_cell.next_cell.step, 6); // Next step incremented
     }
@@ -326,26 +339,27 @@ mod tests {
         let mut cell_a = create_test_cell(cell_index_a, 1000.0, 2e12);
         let mut cell_b = create_test_cell(cell_index_b, 500.0, 1e12);
 
-        // Record initial totals for conservation check
-        let initial_total_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
-        let initial_total_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
+        // Record initial totals for conservation check (using surface layer)
+        let surface_layer = LAYER_COUNT - 1;
+        let initial_total_volume = cell_a.next_cell.volume_layers[surface_layer] + cell_b.next_cell.volume_layers[surface_layer];
+        let initial_total_energy = cell_a.next_cell.energy_layers[surface_layer] + cell_b.next_cell.energy_layers[surface_layer];
 
         // Transfer 100 km³ from A to B
         let success = cell_a.move_volume_to(&mut cell_b, 100.0);
 
         assert!(success, "Transfer should succeed");
-        assert_eq!(cell_a.next_cell.volume, 900.0); // 1000 - 100
-        assert_eq!(cell_b.next_cell.volume, 600.0); // 500 + 100
+        assert_eq!(cell_a.next_cell.volume_layers[surface_layer], 900.0); // 1000 - 100
+        assert_eq!(cell_b.next_cell.volume_layers[surface_layer], 600.0); // 500 + 100
 
         // Energy should transfer proportionally
         // A had 2e12 J / 1000 km³ = 2e9 J/km³ density
         // 100 km³ should transfer 100 * 2e9 = 2e11 J
-        assert_eq!(cell_a.next_cell.energy_j, 1.8e12); // 2e12 - 2e11
-        assert_eq!(cell_b.next_cell.energy_j, 1.2e12); // 1e12 + 2e11
+        assert_eq!(cell_a.next_cell.energy_layers[surface_layer], 1.8e12); // 2e12 - 2e11
+        assert_eq!(cell_b.next_cell.energy_layers[surface_layer], 1.2e12); // 1e12 + 2e11
 
         // Conservation check: totals should be within 0.1% of initial
-        let final_total_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
-        let final_total_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
+        let final_total_volume = cell_a.next_cell.volume_layers[surface_layer] + cell_b.next_cell.volume_layers[surface_layer];
+        let final_total_energy = cell_a.next_cell.energy_layers[surface_layer] + cell_b.next_cell.energy_layers[surface_layer];
 
         let volume_diff_percent =
             ((final_total_volume - initial_total_volume).abs() / initial_total_volume) * 100.0;
@@ -375,11 +389,12 @@ mod tests {
         // Try to transfer more than available
         let success = cell_a.move_volume_to(&mut cell_b, 200.0);
 
+        let surface_layer = LAYER_COUNT - 1;
         assert!(!success, "Transfer should fail");
-        assert_eq!(cell_a.next_cell.volume, 100.0); // Unchanged
-        assert_eq!(cell_b.next_cell.volume, 500.0); // Unchanged
-        assert_eq!(cell_a.next_cell.energy_j, 2e11); // Unchanged
-        assert_eq!(cell_b.next_cell.energy_j, 1e12); // Unchanged
+        assert_eq!(cell_a.next_cell.volume_layers[surface_layer], 100.0); // Unchanged
+        assert_eq!(cell_b.next_cell.volume_layers[surface_layer], 500.0); // Unchanged
+        assert_eq!(cell_a.next_cell.energy_layers[surface_layer], 2e11); // Unchanged
+        assert_eq!(cell_b.next_cell.energy_layers[surface_layer], 1e12); // Unchanged
     }
 
     #[test]
@@ -393,9 +408,10 @@ mod tests {
         // Try to transfer zero volume
         let success = cell_a.move_volume_to(&mut cell_b, 0.0);
 
+        let surface_layer = LAYER_COUNT - 1;
         assert!(!success, "Transfer should fail for zero volume");
-        assert_eq!(cell_a.next_cell.volume, 1000.0); // Unchanged
-        assert_eq!(cell_b.next_cell.volume, 500.0); // Unchanged
+        assert_eq!(cell_a.next_cell.volume_layers[surface_layer], 1000.0); // Unchanged
+        assert_eq!(cell_b.next_cell.volume_layers[surface_layer], 500.0); // Unchanged
     }
 
     #[test]
@@ -409,9 +425,10 @@ mod tests {
         // Try to transfer negative volume
         let success = cell_a.move_volume_to(&mut cell_b, -100.0);
 
+        let surface_layer = LAYER_COUNT - 1;
         assert!(!success, "Transfer should fail for negative volume");
-        assert_eq!(cell_a.next_cell.volume, 1000.0); // Unchanged
-        assert_eq!(cell_b.next_cell.volume, 500.0); // Unchanged
+        assert_eq!(cell_a.next_cell.volume_layers[surface_layer], 1000.0); // Unchanged
+        assert_eq!(cell_b.next_cell.volume_layers[surface_layer], 500.0); // Unchanged
     }
 
     #[test]
@@ -423,23 +440,24 @@ mod tests {
         let mut cell_b = create_test_cell(cell_index_b, 500.0, 1e12);
 
         // Record initial totals for conservation check
-        let initial_total_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
-        let initial_total_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
+        let surface_layer = LAYER_COUNT - 1;
+        let initial_total_volume = cell_a.next_cell.volume_layers[surface_layer] + cell_b.next_cell.volume_layers[surface_layer];
+        let initial_total_energy = cell_a.next_cell.energy_layers[surface_layer] + cell_b.next_cell.energy_layers[surface_layer];
 
         // Transfer 10% of A's volume to B
         let success = cell_a.move_volume_fraction_to(&mut cell_b, 0.1);
 
         assert!(success, "Fraction transfer should succeed");
-        assert_eq!(cell_a.next_cell.volume, 900.0); // 1000 - 100 (10%)
-        assert_eq!(cell_b.next_cell.volume, 600.0); // 500 + 100
+        assert_eq!(cell_a.next_cell.volume_layers[surface_layer], 900.0); // 1000 - 100 (10%)
+        assert_eq!(cell_b.next_cell.volume_layers[surface_layer], 600.0); // 500 + 100
 
         // Energy should transfer proportionally
-        assert_eq!(cell_a.next_cell.energy_j, 1.8e12); // 90% of original
-        assert_eq!(cell_b.next_cell.energy_j, 1.2e12); // Original + transferred
+        assert_eq!(cell_a.next_cell.energy_layers[surface_layer], 1.8e12); // 90% of original
+        assert_eq!(cell_b.next_cell.energy_layers[surface_layer], 1.2e12); // Original + transferred
 
         // Conservation check: totals should be within 0.1% of initial
-        let final_total_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
-        let final_total_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
+        let final_total_volume = cell_a.next_cell.volume_layers[surface_layer] + cell_b.next_cell.volume_layers[surface_layer];
+        let final_total_energy = cell_a.next_cell.energy_layers[surface_layer] + cell_b.next_cell.energy_layers[surface_layer];
 
         let volume_diff_percent =
             ((final_total_volume - initial_total_volume).abs() / initial_total_volume) * 100.0;
@@ -467,8 +485,8 @@ mod tests {
             id: cell_index_a,
             neighbors: H3Utils::neighbors_for(cell_index_a),
             step: 0,
-            volume: 1000.0,
-            energy_j: 2e12,
+            volume_layers: vec![1000.0; LAYER_COUNT],
+            energy_layers: vec![2e12; LAYER_COUNT],
             volcano_volume: 0.0,
             sinkhole_volume: 0.0,
         });
@@ -476,22 +494,23 @@ mod tests {
             id: cell_index_b,
             neighbors: H3Utils::neighbors_for(cell_index_b),
             step: 0,
-            volume: 500.0,
-            energy_j: 1e12,
+            volume_layers: vec![500.0; LAYER_COUNT],
+            energy_layers: vec![1e12; LAYER_COUNT],
             volcano_volume: 0.0,
             sinkhole_volume: 0.0,
         });
 
-        // Record initial totals
-        let initial_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
-        let initial_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
+        // Record initial totals (surface layer)
+        let surface_layer = LAYER_COUNT - 1;
+        let initial_volume = cell_a.next_cell.volume_layers[surface_layer] + cell_b.next_cell.volume_layers[surface_layer];
+        let initial_energy = cell_a.next_cell.energy_layers[surface_layer] + cell_b.next_cell.energy_layers[surface_layer];
 
         // Transfer volume
         cell_a.move_volume_to(&mut cell_b, 200.0);
 
         // Check conservation
-        let final_volume = cell_a.next_cell.volume + cell_b.next_cell.volume;
-        let final_energy = cell_a.next_cell.energy_j + cell_b.next_cell.energy_j;
+        let final_volume = cell_a.next_cell.volume_layers[surface_layer] + cell_b.next_cell.volume_layers[surface_layer];
+        let final_energy = cell_a.next_cell.energy_layers[surface_layer] + cell_b.next_cell.energy_layers[surface_layer];
 
         assert!(
             (initial_volume - final_volume).abs() < 1e-10,
