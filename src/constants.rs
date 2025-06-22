@@ -65,3 +65,9 @@ pub const CONVECTION_ADDITION_MAX: f64 = 0.2;
 pub const CONVECTION_SUBTRACTION_MIN: f64 = 0.1;
 pub const CONVECTION_SUBTRACTION_MAX: f64 = 0.2;
 pub const CONVECTION_BALANCE_TOLERANCE: f64 = 0.03; // 3% tolerance between addition and subtraction
+
+// ===== Convection Templates =====
+pub const CONVECTION_TEMPLATE_LIFESPAN_MIN: u32 = 100;
+pub const CONVECTION_TEMPLATE_LIFESPAN_MAX: u32 = 300;
+pub const CONVECTION_NOISE_SCALE_MIN: f32 = 3.0;
+pub const CONVECTION_NOISE_SCALE_MAX: f32 = 8.0;

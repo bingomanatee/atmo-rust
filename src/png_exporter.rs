@@ -33,10 +33,10 @@ static COLOR_LOOKUP_TABLE: Lazy<Vec<Rgb<u8>>> = Lazy::new(|| {
 fn compute_energy_to_color_static(energy_normalized: f64) -> Rgb<u8> {
     // Define gradient points for magma field appearance (value must be in ascending order)
     let gradient = [
-        ColorPoint { value: 0.0, color: Rgb([0, 0, 0]) },       // Black (coldest)
-        ColorPoint { value: 0.15, color: Rgb([51, 0, 128]) },     // Black at 3.0e24 J
-        ColorPoint { value: 0.375, color: Rgb([128, 0, 25]) },     // Black at 3.0e24 J
-        ColorPoint { value: 0.6, color: Rgb([255, 0, 0]) },     // Red where yellow was (4.8e24 J)
+        ColorPoint { value: 0.0, color: Rgb([0, 12, 51]) },       // deep teal
+        ColorPoint { value: 0.15, color: Rgb([25, 0, 128]) },     // bluish purple 
+        ColorPoint { value: 0.375, color: Rgb([128, 0, 64]) },     // reddish-purple
+        ColorPoint { value: 0.6, color: Rgb([255, 0, 0]) },     // hot red
         ColorPoint { value: 0.8, color: Rgb([255, 255, 0]) },   // Yellow (hotter)
         ColorPoint { value: 1.0, color: Rgb([255, 255, 255]) }, // White (hottest)
     ];

@@ -2,7 +2,7 @@ use crate::asth_cell_next::AsthenosphereCellNext;
 use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs, ASTH_RES};
 use crate::binary_pair::BinaryPair;
 use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME};
-use crate::convection::Convection;
+use crate::convection::{Convection, ConvectionSystem};
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
 use crate::rock_store::RockStore;
@@ -82,8 +82,8 @@ pub struct SimNext {
     /// Binary pairs for levelling (precomputed for efficiency)
     pub binary_pairs: Vec<BinaryPair>,
 
-    /// Global convection system for material addition/subtraction
-    pub convection: Convection,
+    /// Dynamic convection system with template interpolation
+    pub convection_system: ConvectionSystem,
 
     /// Simulation metadata
     pub step: u32,
@@ -107,7 +107,7 @@ impl SimNext {
         let mut sim = Self {
             cells: HashMap::new(),
             binary_pairs: Vec::new(),
-            convection: Convection::new(props.seed as u32, 5882), // Will be updated after initialization
+            convection_system: ConvectionSystem::new(props.seed as u32, 5882), // Will be updated after initialization
             step: 0,
             planet: props.planet,
             store: props.store,
@@ -175,21 +175,27 @@ impl SimNext {
 
         self.generate_binary_pairs();
 
-        // Initialize convection with correct cell count
-        self.convection = Convection::new(seed as u32, self.cells.len());
+        // Initialize convection system with correct cell count
+        self.convection_system = ConvectionSystem::new(seed as u32, self.cells.len());
 
         println!(
             "🌍 Initialized {} cells with {} binary pairs",
             self.cells.len(),
             self.binary_pairs.len()
         );
+        let current_template = self.convection_system.get_interpolated_template();
         println!(
-            "🌪️ Convection system initialized: +{:.1}% -{:.1}% (unaffected: {:.1}%, balanced: {})",
-            self.convection.addition_fraction * 100.0,
-            self.convection.subtraction_fraction * 100.0,
-            self.convection.unaffected_percentage() * 100.0,
-            self.convection.is_balanced()
+            "🌪️ Convection system initialized: +{:.1}% -{:.1}% (unaffected: {:.1}%, balanced: {}, cycle: {}/{})",
+            current_template.addition_fraction * 100.0,
+            current_template.subtraction_fraction * 100.0,
+            current_template.unaffected_percentage() * 100.0,
+            current_template.is_balanced(),
+            self.convection_system.step_in_cycle,
+            self.convection_system.cycle_lifespan
         );
+        
+        // Apply jump-start convection for dramatic initial patterns
+        self.jumpstart_convection();
     }
 
     /// Initialize cells for the planet (backward compatibility)
@@ -450,17 +456,54 @@ impl SimNext {
         }
     }
 
-    /// Apply global convection to all cells
+    /// Apply dynamic convection to all cells and advance cycle
     fn apply_convection(&mut self) {
-        self.debug_print("🌪️ Applying global convection");
+        let progress = self.convection_system.cycle_progress();
+        self.debug_print(&format!("🌪️ Applying dynamic convection (cycle {:.1}%)", progress * 100.0));
         
         for cell in self.cells.values_mut() {
-            self.convection.apply_convection(
+            self.convection_system.apply_convection(
                 &mut cell.next_cell,
                 &self.planet,
                 ASTH_RES
             );
         }
+        
+        // Advance convection system to next step
+        self.convection_system.advance_step();
+        
+        // Check if we started a new cycle and log it
+        if self.convection_system.step_in_cycle == 0 {
+            let new_template = self.convection_system.get_interpolated_template();
+            self.debug_print(&format!(
+                "🌪️ New convection cycle started: +{:.1}% -{:.1}% (scale: {:.1}, lifespan: {})",
+                new_template.addition_fraction * 100.0,
+                new_template.subtraction_fraction * 100.0,
+                new_template.noise_scale,
+                self.convection_system.cycle_lifespan
+            ));
+        }
+    }
+    
+    /// Apply jump-start convection with 10x amplification for dramatic initial patterns
+    fn jumpstart_convection(&mut self) {
+        println!("🚀 Applying jump-start convection (10x amplification)...");
+        
+        for cell in self.cells.values_mut() {
+            self.convection_system.apply_jumpstart_convection(
+                &mut cell.next_cell,
+                &self.planet,
+                ASTH_RES,
+                10.0 // 10x amplification
+            );
+        }
+        
+        // Commit the jump-start changes immediately
+        for cell in self.cells.values_mut() {
+            cell.commit_step();
+        }
+        
+        println!("✅ Jump-start convection applied successfully");
     }
 
     /// Commit next state to current state
