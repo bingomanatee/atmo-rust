@@ -1,17 +1,32 @@
 use crate::asth_cell_next::AsthenosphereCellNext;
 use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs, ASTH_RES};
 use crate::binary_pair::BinaryPair;
-use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME, LAYER_COUNT, VERTICAL_ENERGY_MIXING};
+use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME, LAYER_COUNT, VERTICAL_ENERGY_MIXING, LATERAL_EJECTION_PERCENTAGE, LATERAL_RANDOMIZATION_FACTOR, REDISTRIBUTION_PATTERN_CACHE_SIZE};
 use crate::convection::{Convection, ConvectionSystem};
+use crate::geoconverter::GeoCellConverter;
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
 use crate::rock_store::RockStore;
-use h3o::CellIndex;
+use glam::Vec3;
+use h3o::{CellIndex, LatLng};
 use noise::NoiseFn;
 use rand::Rng;
 use std::collections::HashMap;
 use std::fs;
 use uuid::Uuid;
+
+/// Cached redistribution pattern for lateral material ejection
+#[derive(Clone, Debug)]
+struct RedistributionPattern {
+    /// Source cell ID
+    source_id: CellIndex,
+    /// Target cell ID for ejection
+    target_id: CellIndex,
+    /// Pre-computed randomized direction vector
+    direction: Vec3,
+    /// Ejection distance scaling factor
+    distance_factor: f32,
+}
 
 /// Configuration properties for creating a new SimNext simulation
 pub struct SimNextProps {
@@ -98,6 +113,10 @@ pub struct SimNext {
     pub vis_freq: u32,
     pub debug: bool,
     pub save_to_db: bool,
+    
+    /// Lateral redistribution pattern caching for performance
+    redistribution_patterns: Vec<RedistributionPattern>,
+    pattern_cache_built: bool,
 }
 
 impl SimNext {
@@ -118,6 +137,8 @@ impl SimNext {
             vis_freq: props.vis_freq,
             debug: props.debug,
             save_to_db: props.save_to_db,
+            redistribution_patterns: Vec::new(),
+            pattern_cache_built: false,
         };
 
         sim.initialize_cells_with_props(
@@ -245,22 +266,33 @@ impl SimNext {
     }
     
     fn back_fill(&mut self) {
-        // Apply back_fill to all cells
-        let cell_list: Vec<AsthenosphereCellNext> = self.cells.clone().into_values().collect();
-        for mut cell in cell_list {
-            let mut in_or_near_anomaly = cell.has_any_anomaly();
-            
-            for neighbor_id in cell.clone().cell.neighbors {
-                if let Some(next) = self.cells.get(&neighbor_id) {
-                    if next.has_any_anomaly() {
-                        in_or_near_anomaly = true;
-                        break;
+        // Apply back_fill to all cells - optimized to avoid massive cloning
+        let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
+        
+        for cell_id in cell_ids {
+            // Check if cell has anomaly without cloning
+            let has_anomaly = self.cells.get(&cell_id)
+                .map(|cell| cell.has_any_anomaly())
+                .unwrap_or(false);
+                
+            if !has_anomaly {
+                // Check neighbors without cloning
+                let neighbor_has_anomaly = if let Some(cell) = self.cells.get(&cell_id) {
+                    cell.cell.neighbors.iter().any(|&neighbor_id| {
+                        self.cells.get(&neighbor_id)
+                            .map(|neighbor| neighbor.has_any_anomaly())
+                            .unwrap_or(false)
+                    })
+                } else {
+                    false
+                };
+                
+                if !neighbor_has_anomaly {
+                    // Only now do we modify the cell
+                    if let Some(cell) = self.cells.get_mut(&cell_id) {
+                        cell.back_fill();
                     }
                 }
-            }
-            if !in_or_near_anomaly {
-                cell.back_fill();
-                self.cells.insert(cell.cell_index(), cell);
             }
         }
     }
@@ -280,19 +312,22 @@ impl SimNext {
         // 3. Vertical energy mixing between layers
         self.apply_vertical_energy_mixing();
 
-        // 4. Process existing anomalies and potentially add new ones (all layers)
+        // 4. Apply lateral material ejection from topmost layer
+        self.apply_lateral_material_ejection();
+
+        // 5. Process existing anomalies and potentially add new ones (all layers)
         self.process_volcanoes_and_sinkholes();
         self.try_spawn_volcanoes_and_sinkholes();
 
-        // 5. Apply global convection (only to bottom layer)
+        // 6. Apply global convection (only to bottom layer)
         self.apply_convection();
 
-        // 6. Commit next state to current state
+        // 7. Commit next state to current state
         self.commit_step();
 
         self.step += 1;
 
-        // 7. Export visualization if needed
+        // 8. Export visualization if needed
         if self.visualize && self.step % self.vis_freq == 0 {
             self.debug_print(&format!(
                 "🖼️ Exporting visualization for step {}",
@@ -431,13 +466,24 @@ impl SimNext {
     }
 
     fn process_volcanoes_and_sinkholes(&mut self) {
-        // Process volcanoes and sinkholes for all cells
+        // Process volcanoes and sinkholes for all cells, collecting rotation skew data
         let cell_ids: Vec<CellIndex> = self.cells.keys().cloned().collect();
+        let mut volcano_rotation_skews = Vec::new();
 
         for cell_id in cell_ids {
             if let Some(cell) = self.cells.get_mut(&cell_id) {
-                cell.process_volcanoes_and_sinkholes();
+                if let Some((skewed_volume, skewed_energy)) = cell.process_volcanoes_and_sinkholes() {
+                    volcano_rotation_skews.push((cell_id, skewed_volume, skewed_energy));
+                }
             }
+        }
+        
+        // Process volcano rotation skews using the same logic as lateral material ejection
+        if !volcano_rotation_skews.is_empty() {
+            self.debug_print(&format!("🌋 Processing {} volcano rotation skews ({:.1}% of volcano mass)", 
+                volcano_rotation_skews.len(), 
+                crate::constants::VOLCANO_ROTATION_SKEW_PERCENTAGE * 100.0));
+            self.apply_volcano_rotation_skews(volcano_rotation_skews);
         }
     }
 
@@ -656,6 +702,212 @@ impl SimNext {
 
                 // Update the cell back in the HashMap
                 self.cells.insert(cell_index, cell);
+            }
+        }
+    }
+
+    /// Build a simplified redistribution pattern cache with just target mappings
+    fn build_redistribution_pattern_cache(&mut self) {
+        if self.pattern_cache_built {
+            return;
+        }
+        
+        self.debug_print("🔧 Building simplified redistribution pattern cache");
+        
+        let gc = GeoCellConverter::new(self.planet.radius_km as f64, ASTH_RES);
+        
+        // Just build 5 variations per cell instead of 20, much faster
+        for (&cell_id, _) in &self.cells {
+            let cell_location = gc.cell_to_vec3(cell_id);
+            let lat_lng = GeoCellConverter::vec3_to_lat_lng(cell_location).unwrap_or_else(|| LatLng::new(0.0, 0.0).unwrap());
+            let latitude_magnitude = lat_lng.lat().sin().abs();
+            
+            // Pre-compute base tangential direction
+            let rotation_axis = Vec3::new(0.0, 0.0, 1.0);
+            let base_tangential = rotation_axis.cross(cell_location).normalize() * latitude_magnitude as f32;
+            
+            // Generate just 5 simple patterns with pre-computed offsets
+            let offsets = [0.0, 0.05, -0.05, 0.1, -0.1]; // Simple offset variations
+            for offset in offsets {
+                let ejection_distance = latitude_magnitude * 0.1;
+                let direction_offset = Vec3::new(offset, offset * 0.5, offset * 0.3);
+                let target_direction = (base_tangential + direction_offset).normalize();
+                let target_point = cell_location + target_direction * ejection_distance as f32;
+                let flattened_target = target_point.normalize() * self.planet.radius_km as f32;
+                
+                if let Some(target_cell_id) = gc.vec3_to_cell(flattened_target) {
+                    self.redistribution_patterns.push(RedistributionPattern {
+                        source_id: cell_id,
+                        target_id: target_cell_id,
+                        direction: target_direction,
+                        distance_factor: ejection_distance as f32,
+                    });
+                }
+            }
+        }
+        
+        self.pattern_cache_built = true;
+        self.debug_print(&format!("✅ Fast redistribution cache built with {} patterns", 
+            self.redistribution_patterns.len()));
+    }
+    
+    /// Apply lateral material ejection from all layers due to Earth's rotation
+    /// Each layer gets 20% less ejection exponentially (deepest layer gets minimal ejection)
+    fn apply_lateral_material_ejection(&mut self) {
+        // Build pattern cache if not yet built (only once)
+        if !self.pattern_cache_built {
+            self.build_redistribution_pattern_cache();
+        }
+        
+        // Skip lateral ejection entirely if it's very small to save performance
+        if LATERAL_EJECTION_PERCENTAGE < 0.001 {
+            return;
+        }
+        
+        // Pre-calculate reduction factors to avoid repeated computation
+        let reduction_factors: Vec<f64> = (0..LAYER_COUNT)
+            .map(|layer_index| {
+                let layer_depth_from_surface = (LAYER_COUNT - 1) - layer_index;
+                0.8_f64.powi(layer_depth_from_surface as i32) * LATERAL_EJECTION_PERCENTAGE
+            })
+            .collect();
+        
+        // Process ejections in batches for better performance
+        let mut rng = rand::rng();
+        let mut ejections = Vec::with_capacity(self.cells.len() * LAYER_COUNT);
+        
+        for (&cell_id, cell) in &self.cells {
+            // Find a random cached pattern for this cell (much faster lookup)
+            if let Some(pattern) = self.redistribution_patterns
+                .iter()
+                .find(|p| p.source_id == cell_id) {
+                
+                // Apply ejection to all layers at once
+                for (layer_index, &layer_ejection_rate) in reduction_factors.iter().enumerate() {
+                    let layer_volume = cell.next_cell.volume_layers[layer_index];
+                    
+                    if layer_volume > 1e-6 { // Skip tiny volumes for performance
+                        let ejected_volume = layer_volume * layer_ejection_rate;
+                        let ejected_energy = cell.next_cell.energy_layers[layer_index] * layer_ejection_rate;
+                        
+                        ejections.push((cell_id, pattern.target_id, ejected_volume, ejected_energy, layer_index));
+                    }
+                }
+            }
+        }
+        
+        // Apply all ejections in one pass
+        for (source_id, target_id, volume, energy, layer) in ejections {
+            self.apply_ejection(source_id, target_id, volume, energy, layer);
+        }
+    }
+    
+    
+    /// Calculate tangential direction against Earth's rotation
+    fn calculate_tangential_direction(&self, cell_location: Vec3, magnitude: f64) -> Vec3 {
+        // Earth rotates around the Z-axis (north-south axis)
+        let rotation_axis = Vec3::new(0.0, 0.0, 1.0);
+        
+        // Tangential direction is perpendicular to both the rotation axis and the cell position
+        let tangential = rotation_axis.cross(cell_location).normalize();
+        
+        // Scale by latitude magnitude
+        tangential * magnitude as f32
+    }
+    
+    /// Add 20% randomization to the direction in three dimensions
+    fn randomize_direction(&self, direction: Vec3, randomization_factor: f64) -> Vec3 {
+        let mut rng = rand::rng();
+        
+        // Generate random offsets for each dimension
+        let random_x = rng.random_range(-randomization_factor..randomization_factor);
+        let random_y = rng.random_range(-randomization_factor..randomization_factor);
+        let random_z = rng.random_range(-randomization_factor..randomization_factor);
+        
+        let randomization = Vec3::new(random_x as f32, random_y as f32, random_z as f32);
+        
+        // Apply randomization and normalize
+        (direction + randomization).normalize()
+    }
+    
+    /// Apply a single ejection, distributing material to neighbors within 3-cell radius
+    fn apply_ejection(&mut self, source_id: CellIndex, target_id: CellIndex, volume: f64, energy: f64, layer: usize) {
+        // Remove material from source
+        if let Some(source_cell) = self.cells.get_mut(&source_id) {
+            source_cell.next_cell.volume_layers[layer] -= volume;
+            source_cell.next_cell.energy_layers[layer] -= energy;
+            
+            // Ensure no negative values
+            source_cell.next_cell.volume_layers[layer] = source_cell.next_cell.volume_layers[layer].max(0.0);
+            source_cell.next_cell.energy_layers[layer] = source_cell.next_cell.energy_layers[layer].max(0.0);
+        }
+        
+        // Get neighbors within 3-cell radius of target
+        let distribution_targets = target_id.grid_disk::<Vec<_>>(3);
+        let target_count = distribution_targets.len() as f64;
+        
+        if target_count == 0.0 {
+            return;
+        }
+        
+        // Distribute material equally among all targets (including origin)
+        let volume_per_target = volume / target_count;
+        let energy_per_target = energy / target_count;
+        
+        for &neighbor_id in &distribution_targets {
+            if let Some(target_cell) = self.cells.get_mut(&neighbor_id) {
+                target_cell.next_cell.volume_layers[layer] += volume_per_target;
+                target_cell.next_cell.energy_layers[layer] += energy_per_target;
+            }
+        }
+    }
+    
+    /// Apply volcano rotation skews using cached patterns for performance
+    fn apply_volcano_rotation_skews(&mut self, volcano_skews: Vec<(CellIndex, f64, f64)>) {
+        if volcano_skews.is_empty() {
+            return;
+        }
+        
+        let surface_layer = LAYER_COUNT - 1;
+        
+        // Use cached patterns if available, otherwise use neighbor distribution
+        for (source_cell_id, skewed_volume, skewed_energy) in volcano_skews {
+            // Try to find a cached pattern for fast processing
+            let target_cell_id = if let Some(pattern) = self.redistribution_patterns
+                .iter()
+                .find(|p| p.source_id == source_cell_id) {
+                pattern.target_id
+            } else {
+                // Fallback: just use a neighbor or the same cell
+                if let Some(cell) = self.cells.get(&source_cell_id) {
+                    cell.cell.neighbors.first().copied().unwrap_or(source_cell_id)
+                } else {
+                    source_cell_id
+                }
+            };
+            
+            self.apply_volcano_rotation_ejection(target_cell_id, skewed_volume, skewed_energy, surface_layer);
+        }
+    }
+    
+    /// Apply volcano rotation ejection (no source removal since material is already processed)
+    fn apply_volcano_rotation_ejection(&mut self, target_id: CellIndex, volume: f64, energy: f64, layer: usize) {
+        // Get neighbors within 3-cell radius of target
+        let distribution_targets = target_id.grid_disk::<Vec<_>>(3);
+        let target_count = distribution_targets.len() as f64;
+        
+        if target_count == 0.0 {
+            return;
+        }
+        
+        // Distribute material equally among all targets (including origin)
+        let volume_per_target = volume / target_count;
+        let energy_per_target = energy / target_count;
+        
+        for &neighbor_id in &distribution_targets {
+            if let Some(target_cell) = self.cells.get_mut(&neighbor_id) {
+                target_cell.next_cell.volume_layers[layer] += volume_per_target;
+                target_cell.next_cell.energy_layers[layer] += energy_per_target;
             }
         }
     }

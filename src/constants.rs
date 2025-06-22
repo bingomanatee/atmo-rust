@@ -82,3 +82,11 @@ pub const ENERGY_INCREASE_PER_LAYER: f64 = 0.5; // each layer is 50% more joules
 pub const VERTICAL_ENERGY_MIXING : f64 = 0.2; // that is, each turn, 
 // 20% of the energy from the layer below goes up 
 // and 20% of the energy from the layer above goes down.
+
+// ======= Lateral Material Ejection =======
+pub const LATERAL_EJECTION_PERCENTAGE: f64 = 0.03; // 3% of topmost layer ejects tangentially each turn
+pub const LATERAL_RANDOMIZATION_FACTOR: f64 = 0.2; // 20% randomization of the ejection direction
+pub const VOLCANO_ROTATION_SKEW_PERCENTAGE: f64 = 0.3; // 30% of volcano mass gets skewed from Earth's rotation
+
+// ======= Lateral Redistribution Pattern Caching =======
+pub const REDISTRIBUTION_PATTERN_CACHE_SIZE: usize = 5; // Cache 5 simple patterns per cell for performance

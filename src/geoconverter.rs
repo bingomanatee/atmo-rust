@@ -38,7 +38,7 @@ impl GeoCellConverter {
         let ll = LatLng::from(*cell);
         (ll.lat_radians(), ll.lng_radians())
     }
-    fn vec3_to_lat_lng(v: Vec3) -> Option<LatLng> {
+    pub fn vec3_to_lat_lng(v: Vec3) -> Option<LatLng> {
         let lat = v.z.asin().to_degrees() as f64;
         let lon = v.y.atan2(v.x).to_degrees() as f64;
         LatLng::new(lat, lon).ok()

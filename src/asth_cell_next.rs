@@ -3,8 +3,8 @@ use crate::constants::{
     AVG_STARTING_VOLUME_KM_3, BACK_FILL_LEVEL, BACK_FILL_RATE, CELL_JOULES_EQUILIBRIUM,
     COOLING_RATE, JOULES_PER_KM3, LAYER_COUNT, SINKHOLE_CHANCE, SINKHOLE_DECAY_RATE,
     SINKHOLE_MAX_VOLUME_TO_REMOVE, SINKHOLE_MIN_VOLUME_TO_REMOVE, VOLCANO_BIAS, VOLCANO_CHANCE,
-    VOLCANO_DECAY_RATE,  VOLCANO_JOULES_PER_VOLUME, VOLCANO_MAX_VOLUME,
-    VOLCANO_MIN_VOLUME,
+    VOLCANO_DECAY_RATE, VOLCANO_JOULES_PER_VOLUME, VOLCANO_MAX_VOLUME,
+    VOLCANO_MIN_VOLUME, VOLCANO_ROTATION_SKEW_PERCENTAGE,
 };
 use crate::geoconverter::GeoCellConverter;
 use crate::planet::Planet;
@@ -164,14 +164,28 @@ impl AsthenosphereCellNext {
         self.has_volcano() || self.has_sinkhole()
     }
 
-    pub fn process_volcanoes_and_sinkholes(&mut self) {
+    pub fn process_volcanoes_and_sinkholes(&mut self) -> Option<(f64, f64)> {
         let surface_layer = LAYER_COUNT - 1; // Apply volcano/sinkhole effects to surface layer
+        let mut rotation_skew_data = None;
         
         if self.has_volcano() {
             let volcano_volume = self.next_cell.volcano_volume;
-            self.next_cell.volume_layers[surface_layer] = (self.next_cell.volume_layers[surface_layer] + volcano_volume).max(0.0);
-            self.next_cell.energy_layers[surface_layer] =
-                (self.next_cell.energy_layers[surface_layer] + volcano_volume * VOLCANO_JOULES_PER_VOLUME).max(0.0);
+            
+            // Calculate the amount that gets skewed from rotation (30%)
+            let skewed_volume = volcano_volume * VOLCANO_ROTATION_SKEW_PERCENTAGE;
+            let skewed_energy = skewed_volume * VOLCANO_JOULES_PER_VOLUME;
+            
+            // Add the remaining 70% normally to the surface layer
+            let remaining_volume = volcano_volume - skewed_volume;
+            let remaining_energy = remaining_volume * VOLCANO_JOULES_PER_VOLUME;
+            
+            self.next_cell.volume_layers[surface_layer] = (self.next_cell.volume_layers[surface_layer] + remaining_volume).max(0.0);
+            self.next_cell.energy_layers[surface_layer] = (self.next_cell.energy_layers[surface_layer] + remaining_energy).max(0.0);
+
+            // Store the skewed portion for rotation processing
+            if skewed_volume > 0.0 {
+                rotation_skew_data = Some((skewed_volume, skewed_energy));
+            }
 
             self.next_cell.volcano_volume *= VOLCANO_DECAY_RATE;
             if self.next_cell.volcano_volume < 10.0 {
@@ -190,6 +204,8 @@ impl AsthenosphereCellNext {
                 self.next_cell.sinkhole_volume = 0.0;
             }
         }
+        
+        rotation_skew_data
     }
 
     pub fn add_volcano_cluster(&mut self, volume: f64) {
