@@ -1,11 +1,12 @@
 use crate::asth_cell_next::AsthenosphereCellNext;
 use crate::asthenosphere::{AsthenosphereCell, CellsForPlanetArgs, ASTH_RES};
 use crate::binary_pair::BinaryPair;
-use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME, LAYER_COUNT, VERTICAL_ENERGY_MIXING};
+use crate::constants::{JOULES_PER_KM3, VOLCANO_MAX_VOLUME, LAYER_COUNT, VERTICAL_ENERGY_MIXING, USE_BATCH_TRANSFERS};
 use crate::convection::{Convection, ConvectionSystem};
 use crate::planet::Planet;
 use crate::png_exporter::PngExporter;
 use crate::rock_store::RockStore;
+use crate::batch_transfer::{BatchTransferTracker, CellLayerKey, StepTimer, time_operation, TransferAccountingSystem};
 use h3o::CellIndex;
 use noise::NoiseFn;
 use rand::Rng;
@@ -98,6 +99,9 @@ pub struct SimNext {
     pub vis_freq: u32,
     pub debug: bool,
     pub save_to_db: bool,
+
+    /// Performance timing
+    pub step_timer: StepTimer,
 }
 
 impl SimNext {
@@ -118,6 +122,7 @@ impl SimNext {
             vis_freq: props.vis_freq,
             debug: props.debug,
             save_to_db: props.save_to_db,
+            step_timer: StepTimer::new(),
         };
 
         sim.initialize_cells_with_props(
@@ -267,32 +272,58 @@ impl SimNext {
 
     /// Run a single simulation step
     pub fn run_step(&mut self) {
+        let (_, total_time) = time_operation(|| {
+            // Set current step in accounting system
+            let accounting = TransferAccountingSystem::instance();
+            accounting.set_step(self.step + 1);
+            
+            self.back_fill();
+            self.debug_print(&format!("🔄 Running step {}", self.step + 1));
+
+            // 1. Level cells (equilibrate volumes/energies) across all layers
+            let (_, leveling_time) = time_operation(|| self.level_cells());
+            self.step_timer.leveling_time_ms = leveling_time;
+
+            // 2. Vertical energy mixing between layers
+            let (_, mixing_time) = time_operation(|| self.apply_vertical_energy_mixing());
+            self.step_timer.mixing_time_ms = mixing_time;
+
+            // 3. Process existing anomalies and potentially add new ones (all layers)
+            self.process_volcanoes_and_sinkholes();
+            self.try_spawn_volcanoes_and_sinkholes();
+
+            // 4. Apply global convection (only to bottom layer)
+            let (_, convection_time) = time_operation(|| self.apply_convection());
+            self.step_timer.convection_time_ms = convection_time;
+
+            // 5. Commit batch transfers if using batch system
+            let (_, transfer_time) = time_operation(|| {
+                if USE_BATCH_TRANSFERS {
+                    self.commit_batch_transfers();
+                }
+            });
+            self.step_timer.transfer_commit_time_ms = transfer_time;
+
+            // 6. Apply quantum transfers from accounting system
+            self.apply_quantum_transfers();
+
+            // 7. Commit next state to current state
+            self.commit_step();
+
+            // 8. Cool cells after all transfers are reconciled
+            self.cool_cells();
+        });
         
-        self.back_fill();
-        self.debug_print(&format!("🔄 Running step {}", self.step + 1));
-
-        // 1. Level cells (equilibrate volumes/energies) across all layers
-        self.level_cells();
-
-        // 2. Cool cells in all layers
-        self.cool_cells();
-
-        // 3. Vertical energy mixing between layers
-        self.apply_vertical_energy_mixing();
-
-        // 4. Process existing anomalies and potentially add new ones (all layers)
-        self.process_volcanoes_and_sinkholes();
-        self.try_spawn_volcanoes_and_sinkholes();
-
-        // 5. Apply global convection (only to bottom layer)
-        self.apply_convection();
-
-        // 6. Commit next state to current state
-        self.commit_step();
+        self.step_timer.total_step_time_ms = total_time;
+        
+        // Print timing stats every 10 steps when debug is enabled
+        if self.debug && self.step % 10 == 0 {
+            self.step_timer.print_stats(self.step + 1);
+        }
 
         self.step += 1;
 
-        // 7. Export visualization if needed
+        // 8. Export visualization if needed
         if self.visualize && self.step % self.vis_freq == 0 {
             self.debug_print(&format!(
                 "🖼️ Exporting visualization for step {}",
@@ -359,6 +390,15 @@ impl SimNext {
 
     /// Level a single binary pair using conservative volume transfer (across all layer arrays)
     fn level_binary_pair(&mut self, pair: &BinaryPair) {
+        if USE_BATCH_TRANSFERS {
+            self.level_binary_pair_batch(pair);
+        } else {
+            self.level_binary_pair_direct(pair);
+        }
+    }
+
+    /// Direct transfer version (original implementation)
+    fn level_binary_pair_direct(&mut self, pair: &BinaryPair) {
         // Get both cells
         let (mut cell_a, mut cell_b) = match (
             self.cells.get(&pair.cell_a).cloned(),
@@ -397,17 +437,28 @@ impl SimNext {
                 };
                 let energy_transfer = energy_density * transfer_amount;
 
-                // Apply the transfer
+                // Apply the transfer and record in accounting system
+                let accounting = TransferAccountingSystem::instance();
                 if is_a_higher {
                     cell_a.next_cell.volume_layers[layer_index] -= transfer_amount;
                     cell_a.next_cell.energy_layers[layer_index] -= energy_transfer;
                     cell_b.next_cell.volume_layers[layer_index] += transfer_amount;
                     cell_b.next_cell.energy_layers[layer_index] += energy_transfer;
+                    
+                    // Record transfer in accounting system
+                    let from_key = CellLayerKey::new(pair.cell_a, layer_index);
+                    let to_key = CellLayerKey::new(pair.cell_b, layer_index);
+                    accounting.record_transfer(from_key, to_key, transfer_amount);
                 } else {
                     cell_b.next_cell.volume_layers[layer_index] -= transfer_amount;
                     cell_b.next_cell.energy_layers[layer_index] -= energy_transfer;
                     cell_a.next_cell.volume_layers[layer_index] += transfer_amount;
                     cell_a.next_cell.energy_layers[layer_index] += energy_transfer;
+                    
+                    // Record transfer in accounting system
+                    let from_key = CellLayerKey::new(pair.cell_b, layer_index);
+                    let to_key = CellLayerKey::new(pair.cell_a, layer_index);
+                    accounting.record_transfer(from_key, to_key, transfer_amount);
                 }
 
                 // Ensure non-negative values
@@ -421,6 +472,62 @@ impl SimNext {
         // Update the cells back in the HashMap
         self.cells.insert(pair.cell_a, cell_a);
         self.cells.insert(pair.cell_b, cell_b);
+    }
+
+    /// Batch transfer version (registers transfers instead of applying directly)
+    fn level_binary_pair_batch(&mut self, pair: &BinaryPair) {
+        // Get both cells for calculation only (no cloning needed)
+        let (cell_a, cell_b) = match (
+            self.cells.get(&pair.cell_a),
+            self.cells.get(&pair.cell_b),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return, // Skip if either cell is missing
+        };
+
+        let tracker = BatchTransferTracker::instance();
+
+        // Calculate transfers for each layer and register them
+        for layer_index in 0..LAYER_COUNT {
+            let vol_a = cell_a.next_cell.volume_layers[layer_index];
+            let vol_b = cell_b.next_cell.volume_layers[layer_index];
+
+            let (higher_vol, lower_vol, is_a_higher) = if vol_a > vol_b {
+                (vol_a, vol_b, true)
+            } else {
+                (vol_b, vol_a, false)
+            };
+
+            let total_volume = higher_vol + lower_vol;
+            let equilibrium_volume = total_volume / 2.0;
+            let excess = higher_vol - equilibrium_volume;
+            let transfer_amount = excess * 0.25;
+
+            if transfer_amount > 0.0 {
+                // Calculate proportional energy transfer
+                let energy_density = if higher_vol > 0.0 {
+                    if is_a_higher {
+                        cell_a.next_cell.energy_layers[layer_index] / vol_a
+                    } else {
+                        cell_b.next_cell.energy_layers[layer_index] / vol_b
+                    }
+                } else {
+                    0.0
+                };
+                let energy_transfer = energy_density * transfer_amount;
+
+                // Register transfer instead of applying directly
+                if is_a_higher {
+                    let from_key = CellLayerKey::new(pair.cell_a, layer_index);
+                    let to_key = CellLayerKey::new(pair.cell_b, layer_index);
+                    tracker.register_transfer(from_key, to_key, transfer_amount);
+                } else {
+                    let from_key = CellLayerKey::new(pair.cell_b, layer_index);
+                    let to_key = CellLayerKey::new(pair.cell_a, layer_index);
+                    tracker.register_transfer(from_key, to_key, transfer_amount);
+                }
+            }
+        }
     }
 
     /// Cool all cells with Perlin heating from below (across all layer arrays)
@@ -616,6 +723,15 @@ impl SimNext {
 
         self.debug_print(&format!("🔄 Applying vertical volume and energy mixing ({:.1}% exchange)", VERTICAL_ENERGY_MIXING * 100.0));
 
+        if USE_BATCH_TRANSFERS {
+            self.apply_vertical_energy_mixing_batch();
+        } else {
+            self.apply_vertical_energy_mixing_direct();
+        }
+    }
+
+    /// Direct transfer version for vertical mixing
+    fn apply_vertical_energy_mixing_direct(&mut self) {
         // Get all cell indices
         let cell_indices: Vec<CellIndex> = self.cells.keys().cloned().collect();
 
@@ -639,6 +755,13 @@ impl SimNext {
 
                     cell.next_cell.volume_layers[upper_layer] -= upper_volume_to_transfer;
                     cell.next_cell.volume_layers[upper_layer] += lower_volume_to_transfer;
+                    
+                    // Record transfers in accounting system
+                    let accounting = TransferAccountingSystem::instance();
+                    let lower_key = CellLayerKey::new(cell_index, lower_layer);
+                    let upper_key = CellLayerKey::new(cell_index, upper_layer);
+                    accounting.record_transfer(lower_key.clone(), upper_key.clone(), lower_volume_to_transfer);
+                    accounting.record_transfer(upper_key, lower_key, upper_volume_to_transfer);
 
                     // Apply energy exchange
                     cell.next_cell.energy_layers[lower_layer] -= lower_energy_to_transfer;
@@ -660,11 +783,160 @@ impl SimNext {
         }
     }
 
+    /// Batch transfer version for vertical mixing
+    fn apply_vertical_energy_mixing_batch(&mut self) {
+        let tracker = BatchTransferTracker::instance();
+
+        // Register transfers for all cells without cloning
+        for (&cell_index, cell) in &self.cells {
+            // Mix both volume and energy between adjacent layers within the same cell
+            for layer_index in 0..(LAYER_COUNT - 1) {
+                let lower_layer = layer_index;
+                let upper_layer = layer_index + 1;
+
+                // Calculate volume and energy exchange amounts
+                let lower_volume_to_transfer = cell.next_cell.volume_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
+                let upper_volume_to_transfer = cell.next_cell.volume_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
+                
+                let lower_energy_to_transfer = cell.next_cell.energy_layers[lower_layer] * VERTICAL_ENERGY_MIXING;
+                let upper_energy_to_transfer = cell.next_cell.energy_layers[upper_layer] * VERTICAL_ENERGY_MIXING;
+
+                // Register transfers instead of applying directly
+                let lower_key = CellLayerKey::new(cell_index, lower_layer);
+                let upper_key = CellLayerKey::new(cell_index, upper_layer);
+
+                // Register bidirectional transfer
+                tracker.register_transfer(
+                    lower_key.clone(),
+                    upper_key.clone(),
+                    lower_volume_to_transfer
+                );
+                tracker.register_transfer(
+                    upper_key,
+                    lower_key,
+                    upper_volume_to_transfer
+                );
+            }
+        }
+    }
+
     /// Commit next state to current state (across all cells)
     fn commit_step(&mut self) {
         for cell in self.cells.values_mut() {
             cell.commit_step();
         }
+    }
+
+    /// Commit all batch transfers to cells
+    fn commit_batch_transfers(&mut self) {
+        let tracker = BatchTransferTracker::instance();
+        let transfers = tracker.consume_transfers();
+        
+        if transfers.is_empty() {
+            return;
+        }
+
+        self.debug_print(&format!("🔄 Committing {} batch transfer operations", 
+            transfers.values().map(|to_map| to_map.len()).sum::<usize>()));
+
+        let accounting = TransferAccountingSystem::instance();
+
+        // Process all transfers
+        for (from_key, to_map) in transfers {
+            // Sum all outgoing transfers from this source
+            let total_outgoing_volume: f64 = to_map.values().sum();
+
+            // Apply outgoing transfers (subtract from source)
+            if let Some(from_cell) = self.cells.get_mut(&from_key.cell_id) {
+                if from_key.layer_index < LAYER_COUNT {
+                    from_cell.next_cell.volume_layers[from_key.layer_index] -= total_outgoing_volume;
+                    
+                    // Ensure non-negative values
+                    from_cell.next_cell.volume_layers[from_key.layer_index] = 
+                        from_cell.next_cell.volume_layers[from_key.layer_index].max(0.0);
+                }
+            }
+
+            // Apply individual incoming transfers (add to destinations)
+            for (to_key, volume) in to_map {
+                // Record transfer in accounting system
+                accounting.record_transfer(from_key.clone(), to_key.clone(), volume);
+                
+                if let Some(to_cell) = self.cells.get_mut(&to_key.cell_id) {
+                    if to_key.layer_index < LAYER_COUNT {
+                        to_cell.next_cell.volume_layers[to_key.layer_index] += volume;
+                        // Energy will be computed during reconciliation
+                        
+                        // Ensure non-negative values
+                        to_cell.next_cell.volume_layers[to_key.layer_index] = 
+                            to_cell.next_cell.volume_layers[to_key.layer_index].max(0.0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply quantum transfers from accounting system - consolidate all transfers into single operations
+    fn apply_quantum_transfers(&mut self) {
+        let accounting = TransferAccountingSystem::instance();
+        let current_step = self.step + 1; // We set the accounting step to step + 1 earlier
+        let flattened_transfers = accounting.flatten_transfers_for_step(current_step);
+        
+        if flattened_transfers.is_empty() {
+            return;
+        }
+
+        self.debug_print(&format!("🔬 Applying quantum transfers for {} source cells", flattened_transfers.len()));
+
+        // Process each source cell+layer - only handle volume transfers
+        for (from_key, to_map) in &flattened_transfers {
+            if let Some(source_cell) = self.cells.get_mut(&from_key.cell_id) {
+                if from_key.layer_index < LAYER_COUNT {
+                    // Calculate total outgoing volume
+                    let total_outgoing_volume: f64 = to_map.values().sum();
+                    
+                    if total_outgoing_volume <= 0.0 {
+                        continue;
+                    }
+
+                    // Get current source volume
+                    let source_volume = source_cell.next_cell.volume_layers[from_key.layer_index];
+                    
+                    // Remove volume from source (ensure we don't exceed available)
+                    let actual_volume_transfer = total_outgoing_volume.min(source_volume * 0.95); // Don't transfer more than 95%
+                    source_cell.next_cell.volume_layers[from_key.layer_index] -= actual_volume_transfer;
+                    
+                    // Ensure non-negative values
+                    source_cell.next_cell.volume_layers[from_key.layer_index] = 
+                        source_cell.next_cell.volume_layers[from_key.layer_index].max(0.0);
+                }
+            }
+        }
+
+        // Second pass: distribute volume to destinations
+        for (from_key, to_map) in &flattened_transfers {
+            let total_outgoing_volume: f64 = to_map.values().sum();
+            
+            if total_outgoing_volume <= 0.0 {
+                continue;
+            }
+
+            // Distribute volume to each destination
+            for (to_key, volume_to_transfer) in to_map {
+                if let Some(dest_cell) = self.cells.get_mut(&to_key.cell_id) {
+                    if to_key.layer_index < LAYER_COUNT {
+                        dest_cell.next_cell.volume_layers[to_key.layer_index] += volume_to_transfer;
+                        
+                        // Ensure non-negative values
+                        dest_cell.next_cell.volume_layers[to_key.layer_index] = 
+                            dest_cell.next_cell.volume_layers[to_key.layer_index].max(0.0);
+                    }
+                }
+            }
+        }
+
+        // Clear accounting records for this step
+        accounting.clear_step(current_step);
     }
 
     /// Get total cell count
@@ -678,7 +950,7 @@ impl SimNext {
     }
 
     /// Calculate simulation statistics (using upper layer arrays for primary stats)
-    fn calculate_statistics(&self) -> SimulationStats {
+    pub fn calculate_statistics(&self) -> SimulationStats {
         // Use upper layer from arrays for primary visualization stats
         let upper_layer_index = LAYER_COUNT - 1;
         let volumes: Vec<f64> = self.cells

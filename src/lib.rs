@@ -19,6 +19,7 @@ pub mod convection;
 pub mod asth_cell_next;
 pub mod binary_pair;
 pub mod sim_next;
+pub mod batch_transfer;
 
 #[cfg(test)]
 mod sim_next_test;

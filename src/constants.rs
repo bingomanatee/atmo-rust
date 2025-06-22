@@ -82,3 +82,6 @@ pub const ENERGY_INCREASE_PER_LAYER: f64 = 0.5; // each layer is 50% more joules
 pub const VERTICAL_ENERGY_MIXING : f64 = 0.2; // that is, each turn, 
 // 20% of the energy from the layer below goes up 
 // and 20% of the energy from the layer above goes down.
+
+// ======= Batch Transfer System =======
+pub const USE_BATCH_TRANSFERS: bool = false; // Feature flag to enable/disable batch transfer optimization
