@@ -102,11 +102,16 @@ pub struct SimNext {
 
     /// Performance timing
     pub step_timer: StepTimer,
+    
+    /// Overall execution timing
+    pub start_time: std::time::Instant,
+    pub initialization_time_s: f64,
 }
 
 impl SimNext {
     /// Create a new simulation with configuration props
     pub fn new(props: SimNextProps) -> Self {
+        let start_time = std::time::Instant::now();
         let id = Uuid::new_v4().to_string();
 
         let mut sim = Self {
@@ -123,6 +128,8 @@ impl SimNext {
             debug: props.debug,
             save_to_db: props.save_to_db,
             step_timer: StepTimer::new(),
+            start_time,
+            initialization_time_s: 0.0,
         };
 
         sim.initialize_cells_with_props(
@@ -134,6 +141,14 @@ impl SimNext {
             sim.setup_visualization();
         }
 
+        // Record initialization time
+        sim.initialization_time_s = start_time.elapsed().as_secs_f64();
+        
+        if sim.debug {
+            println!("🚀 Simulation initialized in {:.3}s with {} cells", 
+                sim.initialization_time_s, sim.cells.len());
+        }
+
         sim
     }
 
@@ -142,6 +157,31 @@ impl SimNext {
         if self.debug {
             println!("{}", message);
         }
+    }
+    
+    /// Print comprehensive timing summary
+    pub fn print_timing_summary(&self, steps_completed: u32) {
+        let total_execution_time_s = self.start_time.elapsed().as_secs_f64();
+        let simulation_time_s = total_execution_time_s - self.initialization_time_s;
+        let avg_step_time_s = if steps_completed > 0 { 
+            simulation_time_s / steps_completed as f64 
+        } else { 
+            0.0 
+        };
+        
+        println!("\n⏱️ === EXECUTION TIMING SUMMARY ===");
+        println!("📊 Initialization time: {:.3}s", self.initialization_time_s);
+        println!("🔄 Steps completed: {}", steps_completed);
+        println!("⚡ Average time per step: {:.3}s ({:.1}ms)", avg_step_time_s, avg_step_time_s * 1000.0);
+        println!("🎯 Total simulation time: {:.3}s", simulation_time_s);
+        println!("🚀 Total execution time: {:.3}s", total_execution_time_s);
+        
+        if steps_completed > 0 {
+            let last_step_time_s = self.step_timer.total_step_time_s();
+            println!("📈 Last step time: {:.3}s ({:.1}ms)", last_step_time_s, last_step_time_s * 1000.0);
+        }
+        
+        println!("===============================\n");
     }
 
     /// Initialize array-based cells for the planet using provided configuration
@@ -317,7 +357,7 @@ impl SimNext {
         self.step_timer.total_step_time_ms = total_time;
         
         // Print timing stats every 10 steps when debug is enabled
-        if self.debug && self.step % 10 == 0 {
+        if self.debug && (self.step + 1) % 10 == 0 {
             self.step_timer.print_stats(self.step + 1);
         }
 
@@ -574,12 +614,10 @@ impl SimNext {
             }
         }
 
-        for (cell_id, description) in volcano_spawns {
-            self.debug_print(&format!("🌋 Volcano {} spawned at cell {}", description, cell_id));
-        }
-
-        for (cell_id, description) in sinkhole_spawns {
-            self.debug_print(&format!("🕳️ Sinkhole {} spawned at cell {}", description, cell_id));
+        // Log summary instead of individual spawns to reduce verbosity
+        if !volcano_spawns.is_empty() || !sinkhole_spawns.is_empty() {
+            self.debug_print(&format!("🌋 {} volcanoes, 🕳️ {} sinkholes spawned", 
+                volcano_spawns.len(), sinkhole_spawns.len()));
         }
 
         for cluster in volcano_clusters {
@@ -1018,7 +1056,8 @@ impl SimNext {
             self.run_step();
 
             if self.step % 50 == 0 {
-                println!("⏳ Completed step {}/{}", self.step, steps);
+                println!("⏳ Completed step {}/{} (last step: {:.1}ms)", 
+                    self.step, steps, self.step_timer.total_step_time_ms);
             }
         }
 
@@ -1053,6 +1092,9 @@ impl SimNext {
         if self.visualize {
             println!("🖼️ Visualization images saved to vis/sim_next/");
         }
+
+        // Print comprehensive timing summary
+        self.print_timing_summary(steps);
     }
 }
 
